@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMessageBox,
+    QProgressBar,
     QPushButton,
     QScrollArea,
     QTableWidget,
@@ -44,13 +45,10 @@ from data.db import (
 )
 
 
-FIXED_TARGET_DATE = "2026-04-20"
-
-
 class DayView(QWidget):
-    def __init__(self, target_date: str = FIXED_TARGET_DATE) -> None:
+    def __init__(self, target_date: str | None = None) -> None:
         super().__init__()
-        self.target_date = target_date
+        self.target_date = target_date or date.today().isoformat()
         self.reminder_targets: list[dict[str, str]] = []
         self.notified_reminder_keys: set[str] = set()
         self.displayed_event_refs: list[tuple[str, int]] = []
@@ -77,6 +75,7 @@ class DayView(QWidget):
         self.routine_start_input = QLineEdit()
         self.routine_end_input = QLineEdit()
         self.routine_duration_input = QLineEdit()
+        self.routine_everyday_input = QCheckBox("毎日繰り返す")
         self.routine_remind_start_input = QCheckBox()
         self.routine_remind_end_input = QCheckBox()
         self.routine_note_input = QLineEdit()
@@ -95,7 +94,7 @@ class DayView(QWidget):
         self.events_table = self._create_table(["ID", "種別", "タイトル", "開始", "終了", "メモ"])
         self.duration_only_table = self._create_table(["ID", "タイトル", "所要時間(分)", "メモ"])
         self.tasks_table = self._create_table(
-            ["ID", "タイトル", "締切", "残り(分)", "今日の目標(分)"]
+            ["ID", "タイトル", "締切", "残り(分)", "今日の目標(分)", "進捗率", "進捗"]
         )
         self.allocations_table = self._create_table(
             ["AタスクID", "タイトル", "開始", "終了", "分"]
@@ -477,12 +476,15 @@ class DayView(QWidget):
         self.routine_end_input.setPlaceholderText("HH:MM")
         self.routine_duration_input.setPlaceholderText("例: 45")
         self.routine_note_input.setPlaceholderText("例: 毎日")
+        self.routine_everyday_input.setChecked(True)
+        self.routine_everyday_input.setEnabled(False)
 
         form.addRow("mode", self.routine_mode_input)
         form.addRow("タイトル", self.routine_title_input)
         form.addRow("開始時刻", self.routine_start_input)
         form.addRow("終了時刻", self.routine_end_input)
         form.addRow("所要時間(分)", self.routine_duration_input)
+        form.addRow("繰り返し", self.routine_everyday_input)
         form.addRow("開始リマインド", self.routine_remind_start_input)
         form.addRow("終了リマインド", self.routine_remind_end_input)
         form.addRow("メモ", self.routine_note_input)
@@ -619,17 +621,32 @@ class DayView(QWidget):
         self._set_rows(self.duration_only_table, rows)
 
     def _set_tasks(self, tasks: list[dict]) -> None:
-        rows = [
-            [
+        self.tasks_table.setRowCount(0)
+        self.tasks_table.setRowCount(len(tasks))
+
+        for row_index, task in enumerate(tasks):
+            progress_percent = _task_progress_percent(task)
+            values = [
                 str(task["id"]),
                 str(task["title"]),
                 str(task["deadline_date"]),
                 str(task["remaining_minutes"]),
                 str(task["daily_target_minutes"]),
+                f"{progress_percent}%",
             ]
-            for task in tasks
-        ]
-        self._set_rows(self.tasks_table, rows)
+
+            for column_index, value in enumerate(values):
+                self.tasks_table.setItem(
+                    row_index,
+                    column_index,
+                    QTableWidgetItem(value),
+                )
+
+            progress_bar = QProgressBar()
+            progress_bar.setRange(0, 100)
+            progress_bar.setValue(progress_percent)
+            progress_bar.setFormat(f"{progress_percent}%")
+            self.tasks_table.setCellWidget(row_index, 6, progress_bar)
 
     def _set_allocations(self, allocations: list[dict]) -> None:
         rows = [
@@ -907,6 +924,7 @@ class DayView(QWidget):
         self.routine_start_input.clear()
         self.routine_end_input.clear()
         self.routine_duration_input.clear()
+        self.routine_everyday_input.setChecked(True)
         self.routine_remind_start_input.setChecked(False)
         self.routine_remind_end_input.setChecked(False)
         self.routine_note_input.clear()
@@ -950,6 +968,17 @@ def _datetime_minute_key(value: str) -> str | None:
     if parsed is None:
         return None
     return parsed.strftime("%Y-%m-%dT%H:%M")
+
+
+def _task_progress_percent(task: dict) -> int:
+    total_minutes = int(task.get("total_minutes", 0))
+    remaining_minutes = int(task.get("remaining_minutes", 0))
+    if total_minutes <= 0:
+        return 0
+
+    progress = (total_minutes - remaining_minutes) / total_minutes
+    clamped_progress = max(0.0, min(progress, 1.0))
+    return int(round(clamped_progress * 100))
 
 
 def _event_source(event: dict) -> str:
