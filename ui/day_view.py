@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, time
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QMessageBox,
     QPushButton,
-    QSplitter,
+    QScrollArea,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -60,6 +60,7 @@ class DayView(QWidget):
         self.change_date_button = QPushButton("日付変更")
         self.refresh_button = QPushButton("再計算")
         self.status_label = QLabel()
+        self.status_label.setWordWrap(True)
         self.task_title_input = QLineEdit()
         self.task_deadline_input = QLineEdit()
         self.task_minutes_input = QLineEdit()
@@ -99,6 +100,8 @@ class DayView(QWidget):
         self.allocations_table = self._create_table(
             ["AタスクID", "タイトル", "開始", "終了", "分"]
         )
+        self._set_table_minimum_heights()
+        self._sync_target_date_inputs()
 
         self._build_layout()
         self.change_date_button.clicked.connect(self.refresh)
@@ -120,37 +123,34 @@ class DayView(QWidget):
     def _build_layout(self) -> None:
         root = QVBoxLayout(self)
 
-        header = QHBoxLayout()
-        header.addWidget(self.date_label)
-        header.addStretch(1)
-        header.addWidget(QLabel("対象日付"))
-        header.addWidget(self.target_date_input)
-        header.addWidget(self.change_date_button)
-        header.addWidget(self.refresh_button)
-        root.addLayout(header)
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        root.addWidget(scroll_area)
 
-        forms = QHBoxLayout()
-        forms.addWidget(self._build_add_task_form())
-        forms.addWidget(self._build_add_event_form())
-        forms.addWidget(self._build_add_routine_form())
-        forms.addWidget(self._build_daily_log_form())
-        root.addLayout(forms)
+        content = QWidget()
+        scroll_area.setWidget(content)
+        content_layout = QVBoxLayout(content)
 
-        delete_actions = QHBoxLayout()
-        delete_actions.addStretch(1)
-        delete_actions.addWidget(self.delete_task_button)
-        delete_actions.addWidget(self.delete_event_button)
-        root.addLayout(delete_actions)
-
-        root.addWidget(self._wrap_capacity_summary())
-
-        splitter = QSplitter(Qt.Vertical)
-        splitter.addWidget(self._wrap_table("B/C予定一覧", self.events_table))
-        splitter.addWidget(self._wrap_duration_only_table())
-        splitter.addWidget(self._wrap_table("Aタスク一覧", self.tasks_table))
-        splitter.addWidget(self._wrap_table("A割当結果一覧", self.allocations_table))
-        root.addWidget(splitter, 1)
-        root.addWidget(self.status_label)
+        content_layout.addWidget(self._build_date_controls())
+        content_layout.addWidget(self._wrap_capacity_summary())
+        content_layout.addWidget(
+            self._wrap_table(
+                "B単発予定 + fixed_time C",
+                self.events_table,
+                self.delete_event_button,
+            )
+        )
+        content_layout.addWidget(self._wrap_duration_only_table())
+        content_layout.addWidget(
+            self._wrap_table("Aタスク", self.tasks_table, self.delete_task_button)
+        )
+        content_layout.addWidget(self._wrap_table("A割当結果", self.allocations_table))
+        content_layout.addWidget(self._build_add_task_form())
+        content_layout.addWidget(self._build_add_event_form())
+        content_layout.addWidget(self._build_add_routine_form())
+        content_layout.addWidget(self._build_daily_log_form())
+        content_layout.addWidget(self._wrap_message())
+        content_layout.addStretch(1)
 
     def refresh(self) -> None:
         error = self._apply_target_date_from_input()
@@ -227,8 +227,9 @@ class DayView(QWidget):
             return "対象日付はYYYY-MM-DD形式で入力してください。"
 
         if target_date != self.target_date:
+            old_target_date = self.target_date
             self.target_date = target_date
-            self.log_date_input.setText(target_date)
+            self._sync_target_date_inputs(old_target_date)
 
         return None
 
@@ -254,7 +255,7 @@ class DayView(QWidget):
             return
 
         self.task_title_input.clear()
-        self.task_deadline_input.clear()
+        self.task_deadline_input.setText(self.target_date)
         self.task_minutes_input.clear()
         self.refresh()
         self.status_label.setText("Aタスクを追加しました。")
@@ -423,6 +424,17 @@ class DayView(QWidget):
         if messages:
             self.status_label.setText("リマインド: " + " / ".join(messages))
 
+    def _build_date_controls(self) -> QGroupBox:
+        group = QGroupBox("日付操作")
+        layout = QHBoxLayout(group)
+        layout.addWidget(self.date_label)
+        layout.addStretch(1)
+        layout.addWidget(QLabel("対象日付"))
+        layout.addWidget(self.target_date_input)
+        layout.addWidget(self.change_date_button)
+        layout.addWidget(self.refresh_button)
+        return group
+
     def _build_add_task_form(self) -> QGroupBox:
         group = QGroupBox("Aタスク追加")
         form = QFormLayout(group)
@@ -502,10 +514,26 @@ class DayView(QWidget):
         table.setSelectionBehavior(QAbstractItemView.SelectRows)
         return table
 
-    def _wrap_table(self, title: str, table: QTableWidget) -> QGroupBox:
+    def _set_table_minimum_heights(self) -> None:
+        self.events_table.setMinimumHeight(150)
+        self.duration_only_table.setMinimumHeight(120)
+        self.tasks_table.setMinimumHeight(170)
+        self.allocations_table.setMinimumHeight(170)
+
+    def _wrap_table(
+        self,
+        title: str,
+        table: QTableWidget,
+        action_button: QPushButton | None = None,
+    ) -> QGroupBox:
         group = QGroupBox(title)
         layout = QVBoxLayout(group)
         layout.addWidget(table)
+        if action_button is not None:
+            actions = QHBoxLayout()
+            actions.addStretch(1)
+            actions.addWidget(action_button)
+            layout.addLayout(actions)
         return group
 
     def _wrap_capacity_summary(self) -> QGroupBox:
@@ -519,6 +547,12 @@ class DayView(QWidget):
         layout = QVBoxLayout(group)
         layout.addWidget(self.duration_only_summary_label)
         layout.addWidget(self.duration_only_table)
+        return group
+
+    def _wrap_message(self) -> QGroupBox:
+        group = QGroupBox("メッセージ")
+        layout = QVBoxLayout(group)
+        layout.addWidget(self.status_label)
         return group
 
     def _clear_tables(self) -> None:
@@ -829,11 +863,43 @@ class DayView(QWidget):
 
     def _clear_event_inputs(self) -> None:
         self.event_title_input.clear()
-        self.event_start_input.clear()
-        self.event_end_input.clear()
+        self.event_start_input.setText(f"{self.target_date}T09:00:00")
+        self.event_end_input.setText(f"{self.target_date}T10:00:00")
         self.event_remind_start_input.setChecked(False)
         self.event_remind_end_input.setChecked(False)
         self.event_note_input.clear()
+
+    def _sync_target_date_inputs(self, old_target_date: str | None = None) -> None:
+        self.log_date_input.setText(self.target_date)
+
+        task_deadline = self.task_deadline_input.text().strip()
+        if not task_deadline or task_deadline == old_target_date:
+            self.task_deadline_input.setText(self.target_date)
+
+        self._sync_datetime_input_date(
+            self.event_start_input,
+            old_target_date,
+            "09:00:00",
+        )
+        self._sync_datetime_input_date(
+            self.event_end_input,
+            old_target_date,
+            "10:00:00",
+        )
+
+    def _sync_datetime_input_date(
+        self,
+        input_widget: QLineEdit,
+        old_target_date: str | None,
+        default_time: str,
+    ) -> None:
+        value = input_widget.text().strip()
+        if not value:
+            input_widget.setText(f"{self.target_date}T{default_time}")
+            return
+
+        if old_target_date and value.startswith(f"{old_target_date}T"):
+            input_widget.setText(f"{self.target_date}{value[len(old_target_date):]}")
 
     def _clear_routine_inputs(self) -> None:
         self.routine_mode_input.setCurrentIndex(0)
