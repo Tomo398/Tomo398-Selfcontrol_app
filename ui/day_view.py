@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QScrollArea,
+    QTabWidget,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -104,6 +105,9 @@ class DayView(QWidget):
         self.mark_expired_task_completed_button = QPushButton("完了にする")
         self.mark_expired_task_incomplete_button = QPushButton("未完了にする")
         self.granularity_label = QLabel(f"計算粒度: {DEFAULT_GRANULARITY_MINUTES}分")
+        self.reminder_summary_label = QLabel()
+        self.reminder_summary_label.setWordWrap(True)
+        self.reminder_summary_label.setText("現在のリマインド対象: 0件")
         self.capacity_summary_label = QLabel()
         self.capacity_summary_label.setWordWrap(True)
         self.expired_tasks_summary_label = QLabel()
@@ -119,11 +123,21 @@ class DayView(QWidget):
         self.missing_logs_table = self._create_table(["日付", "Aタスク名", "予定分数"])
         self.duration_only_table = self._create_table(["ID", "タイトル", "所要時間(分)", "メモ"])
         self.tasks_table = self._create_table(
-            ["ID", "タイトル", "締切", "残り(分)", "今日の目標(分)", "進捗", "進捗バー"]
+            [
+                "ID",
+                "タイトル",
+                "締切",
+                "総時間(分)",
+                "残り(分)",
+                "進捗",
+                "進捗バー",
+                "今日の推奨(分)",
+            ]
         )
         self.allocations_table = self._create_table(
-            ["AタスクID", "タイトル", "開始", "終了", "分"]
+            ["開始", "終了", "タスク名", "分数"]
         )
+        self.tasks_table.setColumnHidden(0, True)
         self._set_table_minimum_heights()
         self._sync_target_date_inputs()
 
@@ -159,37 +173,69 @@ class DayView(QWidget):
     def _build_layout(self) -> None:
         root = QVBoxLayout(self)
 
+        tabs = QTabWidget()
+        tabs.addTab(self._build_today_tab(), "今日の確認")
+        tabs.addTab(self._build_edit_tab(), "入力・編集")
+        tabs.addTab(self._build_settings_tab(), "設定")
+        root.addWidget(tabs)
+        root.addWidget(self._wrap_message())
+
+    def _build_today_tab(self) -> QWidget:
+        return self._build_scroll_tab(
+            [
+                self._build_date_controls(),
+                self._wrap_capacity_summary(),
+                self._wrap_missing_logs(),
+                self._wrap_expired_tasks(),
+                self._wrap_table(
+                    "今日のB予定・fixed_time C",
+                    self.events_table,
+                    self.delete_event_button,
+                ),
+                self._wrap_duration_only_table(),
+                self._wrap_table(
+                    "今日のAタスク",
+                    self.tasks_table,
+                    self.delete_task_button,
+                ),
+                self._wrap_table("今日のA割当結果", self.allocations_table),
+            ]
+        )
+
+    def _build_edit_tab(self) -> QWidget:
+        return self._build_scroll_tab(
+            [
+                self._build_add_task_form(),
+                self._build_update_task_total_form(),
+                self._build_add_event_form(),
+                self._build_add_routine_form(),
+                self._build_daily_log_form(),
+            ]
+        )
+
+    def _build_settings_tab(self) -> QWidget:
+        return self._build_scroll_tab(
+            [
+                self._wrap_reminder_settings(),
+            ]
+        )
+
+    def _build_scroll_tab(self, widgets: list[QWidget]) -> QWidget:
+        tab = QWidget()
+        tab_layout = QVBoxLayout(tab)
+
         scroll_area = QScrollArea()
         scroll_area.setWidgetResizable(True)
-        root.addWidget(scroll_area)
+        tab_layout.addWidget(scroll_area)
 
         content = QWidget()
         scroll_area.setWidget(content)
         content_layout = QVBoxLayout(content)
 
-        content_layout.addWidget(self._build_date_controls())
-        content_layout.addWidget(self._wrap_capacity_summary())
-        content_layout.addWidget(self._wrap_missing_logs())
-        content_layout.addWidget(self._wrap_expired_tasks())
-        content_layout.addWidget(
-            self._wrap_table(
-                "B単発予定 + fixed_time C",
-                self.events_table,
-                self.delete_event_button,
-            )
-        )
-        content_layout.addWidget(self._wrap_duration_only_table())
-        content_layout.addWidget(
-            self._wrap_table("Aタスク", self.tasks_table, self.delete_task_button)
-        )
-        content_layout.addWidget(self._build_update_task_total_form())
-        content_layout.addWidget(self._wrap_table("A割当結果", self.allocations_table))
-        content_layout.addWidget(self._build_add_task_form())
-        content_layout.addWidget(self._build_add_event_form())
-        content_layout.addWidget(self._build_add_routine_form())
-        content_layout.addWidget(self._build_daily_log_form())
-        content_layout.addWidget(self._wrap_message())
+        for widget in widgets:
+            content_layout.addWidget(widget)
         content_layout.addStretch(1)
+        return tab
 
     def refresh(self) -> None:
         error = self._apply_target_date_from_input()
@@ -656,7 +702,7 @@ class DayView(QWidget):
         self.expired_tasks_table.setMinimumHeight(120)
         self.missing_logs_table.setMinimumHeight(110)
         self.duration_only_table.setMinimumHeight(120)
-        self.tasks_table.setMinimumHeight(170)
+        self.tasks_table.setMinimumHeight(190)
         self.allocations_table.setMinimumHeight(170)
 
     def _wrap_table(
@@ -676,7 +722,7 @@ class DayView(QWidget):
         return group
 
     def _wrap_capacity_summary(self) -> QGroupBox:
-        group = QGroupBox("容量サマリー")
+        group = QGroupBox("今日の状態サマリー")
         layout = QVBoxLayout(group)
         layout.addWidget(self.granularity_label)
         layout.addWidget(self.capacity_summary_label)
@@ -695,7 +741,7 @@ class DayView(QWidget):
         return group
 
     def _wrap_missing_logs(self) -> QGroupBox:
-        group = QGroupBox("未入力ログ")
+        group = QGroupBox("前日の未入力ログ")
         layout = QVBoxLayout(group)
         layout.addWidget(self.missing_logs_summary_label)
         layout.addWidget(self.missing_logs_table)
@@ -710,6 +756,12 @@ class DayView(QWidget):
         layout = QVBoxLayout(group)
         layout.addWidget(self.duration_only_summary_label)
         layout.addWidget(self.duration_only_table)
+        return group
+
+    def _wrap_reminder_settings(self) -> QGroupBox:
+        group = QGroupBox("アプリ内リマインド")
+        layout = QVBoxLayout(group)
+        layout.addWidget(self.reminder_summary_label)
         return group
 
     def _wrap_message(self) -> QGroupBox:
@@ -783,7 +835,7 @@ class DayView(QWidget):
         self._set_rows(self.expired_tasks_table, rows)
         if rows:
             self.expired_tasks_summary_label.setText(
-                f"完了または未完了として閉じてください: {len(rows)}件"
+                f"要確認: 締切超過activeタスク {len(rows)}件"
             )
             self.mark_expired_task_completed_button.setEnabled(True)
             self.mark_expired_task_incomplete_button.setEnabled(True)
@@ -823,7 +875,7 @@ class DayView(QWidget):
     def _set_capacity_summary(self, summary: dict) -> None:
         surplus_minutes = int(summary["surplus_minutes"])
         if surplus_minutes < 0:
-            surplus_text = f"過密警告: 不足 {abs(surplus_minutes)}分"
+            surplus_text = f"過密警告: 実質作業可能時間が {abs(surplus_minutes)}分不足"
         else:
             surplus_text = f"余力: {surplus_minutes}分"
 
@@ -867,9 +919,11 @@ class DayView(QWidget):
                 str(task["id"]),
                 str(task["title"]),
                 str(task["deadline_date"]),
+                str(total_minutes),
                 str(task["remaining_minutes"]),
-                str(task["daily_target_minutes"]),
                 f"{completed_minutes} / {total_minutes}分（{display_percent:.1f}%）",
+                "",
+                str(task["daily_target_minutes"]),
             ]
 
             for column_index, value in enumerate(values):
@@ -888,10 +942,9 @@ class DayView(QWidget):
     def _set_allocations(self, allocations: list[dict]) -> None:
         rows = [
             [
-                str(allocation["a_task_id"]),
-                str(allocation["title"]),
                 _format_datetime(allocation["start"]),
                 _format_datetime(allocation["end"]),
+                str(allocation["title"]),
                 str(allocation["minutes"]),
             ]
             for allocation in allocations
@@ -954,6 +1007,7 @@ class DayView(QWidget):
             )
 
         self.reminder_targets = targets
+        self.reminder_summary_label.setText(f"現在のリマインド対象: {len(targets)}件")
 
     def _set_rows(self, table: QTableWidget, rows: list[list[str]]) -> None:
         table.setRowCount(len(rows))
