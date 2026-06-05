@@ -212,3 +212,5 @@ __marimo__/
 *.sqlite
 *.sqlite3
 
+#追加2
+AGENTS.md

@@ -4,6 +4,7 @@ from core.scheduler import (
     allocate_task_to_free_blocks,
     allocate_tasks_to_free_blocks,
     build_busy_blocks,
+    build_capacity_summary,
     build_free_blocks,
     compute_daily_target_rounded_minutes,
 )
@@ -63,6 +64,40 @@ def test_build_free_blocks_subtracts_merged_busy_blocks() -> None:
         (dt(11), dt(13)),
         (dt(14), dt(15)),
     ]
+
+
+def test_build_capacity_summary_subtracts_duration_only_cost() -> None:
+    free_blocks = [
+        (dt(8), dt(10)),
+        (dt(13), dt(14)),
+    ]
+    duration_only_events = [
+        {"mode": "duration_only", "duration_minutes": 90},
+        {"mode": "duration_only", "duration_minutes": 30},
+    ]
+    tasks_with_targets = [
+        {"daily_target_minutes": 240},
+        {"daily_target_minutes": 30},
+    ]
+    allocations = [
+        {"minutes": 60},
+        {"minutes": 30},
+    ]
+
+    assert build_capacity_summary(
+        free_blocks=free_blocks,
+        duration_only_events=duration_only_events,
+        tasks_with_targets=tasks_with_targets,
+        allocations=allocations,
+    ) == {
+        "fixed_free_minutes": 180,
+        "floating_c_minutes": 120,
+        "effective_work_minutes": 60,
+        "total_a_target_minutes": 270,
+        "surplus_minutes": -210,
+        "is_over_capacity": True,
+        "allocated_a_minutes": 90,
+    }
 
 
 def test_allocate_task_to_free_blocks_uses_free_blocks_in_order() -> None:

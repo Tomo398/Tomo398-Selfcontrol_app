@@ -12,6 +12,34 @@ CREATE TABLE IF NOT EXISTS events (
   note TEXT NOT NULL DEFAULT ''
 );
 
+-- C: 日付を持たない繰り返し予定（生活ルーティン）
+CREATE TABLE IF NOT EXISTS routine_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  title TEXT NOT NULL,
+  mode TEXT NOT NULL CHECK(mode IN ('fixed_time', 'duration_only')),
+  start_time TEXT,              -- HH:MM, fixed_time用
+  end_time TEXT,                -- HH:MM, fixed_time用
+  duration_minutes INTEGER,     -- duration_only用
+  weekdays TEXT NOT NULL DEFAULT '0,1,2,3,4,5,6',
+  remind_start INTEGER NOT NULL DEFAULT 0,
+  remind_end INTEGER NOT NULL DEFAULT 0,
+  note TEXT NOT NULL DEFAULT '',
+  CHECK (
+    (
+      mode = 'fixed_time'
+      AND start_time IS NOT NULL
+      AND end_time IS NOT NULL
+      AND start_time < end_time
+    )
+    OR
+    (
+      mode = 'duration_only'
+      AND duration_minutes IS NOT NULL
+      AND duration_minutes > 0
+    )
+  )
+);
+
 -- A: 締切と必要工数を持つタスク
 CREATE TABLE IF NOT EXISTS a_tasks (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -37,5 +65,6 @@ CREATE TABLE IF NOT EXISTS daily_logs (
 -- 便利なインデックス（最低限）
 CREATE INDEX IF NOT EXISTS idx_events_start ON events(start_dt);
 CREATE INDEX IF NOT EXISTS idx_events_type  ON events(type);
+CREATE INDEX IF NOT EXISTS idx_routine_events_mode ON routine_events(mode);
 CREATE INDEX IF NOT EXISTS idx_tasks_deadline ON a_tasks(deadline_date);
 CREATE INDEX IF NOT EXISTS idx_logs_date ON daily_logs(log_date);

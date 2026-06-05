@@ -217,6 +217,76 @@ def format_blocks(
         for s, e in blocks
     ]
 
+
+def total_block_minutes(blocks: list[TimeBlock]) -> int:
+    """
+    TimeBlockの合計分数を返す。
+    """
+    return sum(int((end - start).total_seconds() // 60) for start, end in blocks)
+
+
+def total_duration_only_minutes(routine_events: list[dict]) -> int:
+    """
+    時間未指定C(duration_only)の合計分数を返す。
+    """
+    total = 0
+
+    for event in routine_events:
+        if event.get("mode") != "duration_only":
+            continue
+
+        minutes = int(event.get("duration_minutes", 0))
+        if minutes > 0:
+            total += minutes
+
+    return total
+
+
+def total_daily_target_minutes(tasks: list[dict]) -> int:
+    """
+    daily_target_minutes付きAタスクの今日の推奨合計を返す。
+    """
+    return sum(int(task.get("daily_target_minutes", 0)) for task in tasks)
+
+
+def total_allocation_minutes(allocations: list[dict]) -> int:
+    """
+    A割当結果の合計分数を返す。
+    """
+    return sum(int(allocation.get("minutes", 0)) for allocation in allocations)
+
+
+def build_capacity_summary(
+    free_blocks: list[TimeBlock],
+    duration_only_events: list[dict],
+    tasks_with_targets: list[dict],
+    allocations: list[dict] | None = None,
+) -> dict:
+    """
+    fixed_time予定を引いた空き時間から、時間未指定Cを固定コストとして差し引く。
+    duration_only Cはまだ時刻へ自動配置しない。
+    """
+    fixed_free_minutes = total_block_minutes(free_blocks)
+    floating_c_minutes = total_duration_only_minutes(duration_only_events)
+    effective_work_minutes = max(fixed_free_minutes - floating_c_minutes, 0)
+    total_a_target_minutes = total_daily_target_minutes(tasks_with_targets)
+    surplus_minutes = effective_work_minutes - total_a_target_minutes
+
+    summary = {
+        "fixed_free_minutes": fixed_free_minutes,
+        "floating_c_minutes": floating_c_minutes,
+        "effective_work_minutes": effective_work_minutes,
+        "total_a_target_minutes": total_a_target_minutes,
+        "surplus_minutes": surplus_minutes,
+        "is_over_capacity": surplus_minutes < 0,
+    }
+
+    if allocations is not None:
+        summary["allocated_a_minutes"] = total_allocation_minutes(allocations)
+
+    return summary
+
+
 def subtract_busy_from_free_blocks(
     free_blocks: list[TimeBlock],
     busy_blocks: list[TimeBlock],
