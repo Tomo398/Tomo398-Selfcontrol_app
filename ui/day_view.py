@@ -70,6 +70,7 @@ class DayView(QWidget):
         self.displayed_event_refs: list[tuple[str, int]] = []
         self.displayed_missing_log_refs: list[tuple[str, int]] = []
         self.displayed_expired_task_ids: list[int] = []
+        self.displayed_duration_only_routine_ids: list[int] = []
 
         self.date_label = QLabel()
         self.target_date_input = QLineEdit(self.target_date)
@@ -108,6 +109,7 @@ class DayView(QWidget):
         self.save_log_button = QPushButton("日次ログ保存")
         self.delete_task_button = QPushButton("選択Aタスク削除")
         self.delete_event_button = QPushButton("選択B/C予定削除")
+        self.delete_duration_only_button = QPushButton("選択時間未指定C削除")
         self.record_zero_missing_log_button = QPushButton("0分として記録")
         self.mark_expired_task_completed_button = QPushButton("完了にする")
         self.mark_expired_task_incomplete_button = QPushButton("未完了にする")
@@ -164,6 +166,9 @@ class DayView(QWidget):
         self.save_log_button.clicked.connect(self.save_daily_log)
         self.delete_task_button.clicked.connect(self.delete_selected_task)
         self.delete_event_button.clicked.connect(self.delete_selected_event)
+        self.delete_duration_only_button.clicked.connect(
+            self.delete_selected_duration_only_routine
+        )
         self.record_zero_missing_log_button.clicked.connect(
             self.record_selected_missing_log_as_zero
         )
@@ -583,6 +588,24 @@ class DayView(QWidget):
         self.refresh()
         self.status_label.setText("B/C予定を削除しました。")
 
+    def delete_selected_duration_only_routine(self) -> None:
+        routine_id = self._selected_duration_only_routine_id()
+        if routine_id is None:
+            self.status_label.setText("削除する時間未指定Cを選択してください。")
+            return
+
+        if not self._confirm_delete("選択した時間未指定C"):
+            return
+
+        try:
+            delete_routine_event(routine_id)
+        except Exception as exc:
+            self.status_label.setText(f"時間未指定Cの削除に失敗しました: {exc}")
+            return
+
+        self.refresh()
+        self.status_label.setText("時間未指定Cを削除しました。")
+
     def check_reminders(self) -> None:
         now = datetime.now()
         current_date = now.date().isoformat()
@@ -819,6 +842,10 @@ class DayView(QWidget):
         layout = QVBoxLayout(group)
         layout.addWidget(self.duration_only_summary_label)
         layout.addWidget(self.duration_only_table)
+        actions = QHBoxLayout()
+        actions.addStretch(1)
+        actions.addWidget(self.delete_duration_only_button)
+        layout.addLayout(actions)
         return group
 
     def _wrap_reminder_settings(self) -> QGroupBox:
@@ -850,6 +877,7 @@ class DayView(QWidget):
         self.displayed_event_refs = []
         self.displayed_missing_log_refs = []
         self.displayed_expired_task_ids = []
+        self.displayed_duration_only_routine_ids = []
         self.capacity_summary_label.clear()
         self.expired_tasks_summary_label.setText("期限切れAタスクなし")
         self.mark_expired_task_completed_button.setEnabled(False)
@@ -857,6 +885,7 @@ class DayView(QWidget):
         self.missing_logs_summary_label.setText("未入力ログなし")
         self.record_zero_missing_log_button.setEnabled(False)
         self.duration_only_summary_label.clear()
+        self.delete_duration_only_button.setEnabled(False)
         for table in (
             self.events_table,
             self.expired_tasks_table,
@@ -969,16 +998,22 @@ class DayView(QWidget):
         total_minutes: int,
     ) -> None:
         self.duration_only_summary_label.setText(f"合計所要時間: {total_minutes}分")
-        rows = [
-            [
-                f'C{routine["routine_id"]}',
-                str(routine["title"]),
-                str(routine["duration_minutes"]),
-                str(routine.get("note", "")),
-            ]
-            for routine in routines
-        ]
+        rows = []
+        self.displayed_duration_only_routine_ids = []
+
+        for routine in routines:
+            rows.append(
+                [
+                    f'C{routine["routine_id"]}',
+                    str(routine["title"]),
+                    str(routine["duration_minutes"]),
+                    str(routine.get("note", "")),
+                ]
+            )
+            self.displayed_duration_only_routine_ids.append(int(routine["routine_id"]))
+
         self._set_rows(self.duration_only_table, rows)
+        self.delete_duration_only_button.setEnabled(bool(rows))
 
     def _set_tasks(self, tasks: list[dict]) -> None:
         self.tasks_table.setRowCount(0)
@@ -1116,6 +1151,12 @@ class DayView(QWidget):
         if row < 0 or row >= len(self.displayed_missing_log_refs):
             return None
         return self.displayed_missing_log_refs[row]
+
+    def _selected_duration_only_routine_id(self) -> int | None:
+        row = self.duration_only_table.currentRow()
+        if row < 0 or row >= len(self.displayed_duration_only_routine_ids):
+            return None
+        return self.displayed_duration_only_routine_ids[row]
 
     def _selected_expired_task_id(self) -> int | None:
         row = self.expired_tasks_table.currentRow()
