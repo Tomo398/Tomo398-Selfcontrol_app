@@ -137,6 +137,44 @@ def recompute_remaining_minutes(
         conn.close()
 
 
+def update_a_task_total_minutes(
+    a_task_id: int,
+    new_total_minutes: int,
+    db_path: Path = DEFAULT_DB_PATH,
+) -> int:
+    if new_total_minutes <= 0:
+        raise ValueError("new_total_minutes must be >= 1")
+
+    conn = connect(db_path)
+    try:
+        row = conn.execute(
+            "SELECT id FROM a_tasks WHERE id = ?",
+            (a_task_id,),
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"a_task_id not found: {a_task_id}")
+
+        sum_row = conn.execute(
+            "SELECT COALESCE(SUM(actual_minutes), 0) AS s FROM daily_logs WHERE a_task_id = ?",
+            (a_task_id,),
+        ).fetchone()
+        done = int(sum_row["s"])
+        remaining = max(int(new_total_minutes) - done, 0)
+
+        conn.execute(
+            """
+            UPDATE a_tasks
+            SET total_minutes = ?, remaining_minutes = ?
+            WHERE id = ?
+            """,
+            (int(new_total_minutes), remaining, a_task_id),
+        )
+        conn.commit()
+        return remaining
+    finally:
+        conn.close()
+
+
 def get_daily_logs(
     a_task_id: int,
     db_path: Path = DEFAULT_DB_PATH,
@@ -153,6 +191,27 @@ def get_daily_logs(
             (a_task_id,),
         ).fetchall()
         return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def has_daily_log(
+    log_date: str,
+    a_task_id: int,
+    db_path: Path = DEFAULT_DB_PATH,
+) -> bool:
+    conn = connect(db_path)
+    try:
+        row = conn.execute(
+            """
+            SELECT 1
+            FROM daily_logs
+            WHERE log_date = ? AND a_task_id = ?
+            LIMIT 1
+            """,
+            (log_date, a_task_id),
+        ).fetchone()
+        return row is not None
     finally:
         conn.close()
 

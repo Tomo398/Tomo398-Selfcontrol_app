@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta
 
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import (
@@ -37,12 +37,17 @@ from data.db import (
     insert_a_task,
     insert_event,
     insert_routine_event,
+    has_daily_log,
     list_a_tasks,
     list_events_by_date,
     list_routine_events_for_date,
     recompute_remaining_minutes,
+    update_a_task_total_minutes,
     upsert_daily_log,
 )
+
+
+EVERYDAY_WEEKDAYS = "0,1,2,3,4,5,6"
 
 
 class DayView(QWidget):
@@ -52,6 +57,7 @@ class DayView(QWidget):
         self.reminder_targets: list[dict[str, str]] = []
         self.notified_reminder_keys: set[str] = set()
         self.displayed_event_refs: list[tuple[str, int]] = []
+        self.displayed_missing_log_refs: list[tuple[str, int]] = []
 
         self.date_label = QLabel()
         self.target_date_input = QLineEdit(self.target_date)
@@ -63,6 +69,8 @@ class DayView(QWidget):
         self.task_deadline_input = QLineEdit()
         self.task_minutes_input = QLineEdit()
         self.add_task_button = QPushButton("Aタスク追加")
+        self.task_total_update_input = QLineEdit()
+        self.update_task_total_button = QPushButton("A想定時間更新")
         self.event_title_input = QLineEdit()
         self.event_start_input = QLineEdit()
         self.event_end_input = QLineEdit()
@@ -76,6 +84,7 @@ class DayView(QWidget):
         self.routine_end_input = QLineEdit()
         self.routine_duration_input = QLineEdit()
         self.routine_everyday_input = QCheckBox("毎日繰り返す")
+        self.routine_repeat_hint_label = QLabel()
         self.routine_remind_start_input = QCheckBox()
         self.routine_remind_end_input = QCheckBox()
         self.routine_note_input = QLineEdit()
@@ -87,14 +96,18 @@ class DayView(QWidget):
         self.save_log_button = QPushButton("日次ログ保存")
         self.delete_task_button = QPushButton("選択Aタスク削除")
         self.delete_event_button = QPushButton("選択B/C予定削除")
+        self.record_zero_missing_log_button = QPushButton("0分として記録")
         self.capacity_summary_label = QLabel()
         self.capacity_summary_label.setWordWrap(True)
+        self.missing_logs_summary_label = QLabel()
+        self.missing_logs_summary_label.setWordWrap(True)
         self.duration_only_summary_label = QLabel()
 
         self.events_table = self._create_table(["ID", "種別", "タイトル", "開始", "終了", "メモ"])
+        self.missing_logs_table = self._create_table(["日付", "Aタスク名", "予定分数"])
         self.duration_only_table = self._create_table(["ID", "タイトル", "所要時間(分)", "メモ"])
         self.tasks_table = self._create_table(
-            ["ID", "タイトル", "締切", "残り(分)", "今日の目標(分)", "進捗率", "進捗"]
+            ["ID", "タイトル", "締切", "残り(分)", "今日の目標(分)", "進捗", "進捗バー"]
         )
         self.allocations_table = self._create_table(
             ["AタスクID", "タイトル", "開始", "終了", "分"]
@@ -106,13 +119,19 @@ class DayView(QWidget):
         self.change_date_button.clicked.connect(self.refresh)
         self.refresh_button.clicked.connect(self.refresh)
         self.add_task_button.clicked.connect(self.add_a_task)
+        self.update_task_total_button.clicked.connect(self.update_selected_task_total)
         self.add_event_button.clicked.connect(self.add_b_event)
         self.add_routine_button.clicked.connect(self.add_routine_event)
         self.routine_mode_input.currentTextChanged.connect(self._update_routine_mode_inputs)
+        self.routine_everyday_input.toggled.connect(self._update_routine_repeat_hint)
         self.save_log_button.clicked.connect(self.save_daily_log)
         self.delete_task_button.clicked.connect(self.delete_selected_task)
         self.delete_event_button.clicked.connect(self.delete_selected_event)
+        self.record_zero_missing_log_button.clicked.connect(
+            self.record_selected_missing_log_as_zero
+        )
         self._update_routine_mode_inputs()
+        self._update_routine_repeat_hint()
         self.refresh()
         self.reminder_timer = QTimer(self)
         self.reminder_timer.setInterval(60_000)
@@ -132,6 +151,7 @@ class DayView(QWidget):
 
         content_layout.addWidget(self._build_date_controls())
         content_layout.addWidget(self._wrap_capacity_summary())
+        content_layout.addWidget(self._wrap_missing_logs())
         content_layout.addWidget(
             self._wrap_table(
                 "B単発予定 + fixed_time C",
@@ -143,6 +163,7 @@ class DayView(QWidget):
         content_layout.addWidget(
             self._wrap_table("Aタスク", self.tasks_table, self.delete_task_button)
         )
+        content_layout.addWidget(self._build_update_task_total_form())
         content_layout.addWidget(self._wrap_table("A割当結果", self.allocations_table))
         content_layout.addWidget(self._build_add_task_form())
         content_layout.addWidget(self._build_add_event_form())
@@ -193,12 +214,14 @@ class DayView(QWidget):
                 tasks_with_targets=tasks_with_targets,
                 allocations=allocations,
             )
+            missing_logs = self._build_missing_logs_for_previous_day(tasks)
         except Exception as exc:
             self._clear_tables()
             self.status_label.setText(f"読み込みに失敗しました: {exc}")
             return
 
         self._set_events(scheduled_events)
+        self._set_missing_logs(missing_logs)
         self._set_capacity_summary(capacity_summary)
         self._set_duration_only_routines(
             duration_only_routines,
@@ -212,7 +235,7 @@ class DayView(QWidget):
         self.status_label.setText(
             f"B/C予定 {len(scheduled_events)}件 / 時間未指定C 合計 "
             f"{capacity_summary['floating_c_minutes']}分 / Aタスク {len(tasks)}件 / "
-            f"割当 {len(allocations)}件{capacity_status}"
+            f"割当 {len(allocations)}件 / 未入力ログ {len(missing_logs)}件{capacity_status}"
         )
 
     def _apply_target_date_from_input(self) -> str | None:
@@ -258,6 +281,34 @@ class DayView(QWidget):
         self.task_minutes_input.clear()
         self.refresh()
         self.status_label.setText("Aタスクを追加しました。")
+
+    def update_selected_task_total(self) -> None:
+        a_task_id = self._selected_row_id(self.tasks_table)
+        new_total_minutes_text = self.task_total_update_input.text().strip()
+
+        error = self._validate_task_total_update_input(
+            a_task_id,
+            new_total_minutes_text,
+        )
+        if error:
+            self.status_label.setText(error)
+            return
+
+        try:
+            new_total_minutes = int(new_total_minutes_text)
+            remaining_minutes = update_a_task_total_minutes(
+                a_task_id=int(a_task_id),
+                new_total_minutes=new_total_minutes,
+            )
+        except Exception as exc:
+            self.status_label.setText(f"A想定時間の更新に失敗しました: {exc}")
+            return
+
+        self.task_total_update_input.clear()
+        self.refresh()
+        self.status_label.setText(
+            f"A想定時間を更新しました。残り時間: {remaining_minutes}分"
+        )
 
     def add_b_event(self) -> None:
         title = self.event_title_input.text().strip()
@@ -312,6 +363,7 @@ class DayView(QWidget):
             if mode == "duration_only"
             else None
         )
+        weekdays = self._routine_weekdays_from_repeat_setting()
 
         try:
             insert_routine_event(
@@ -320,7 +372,7 @@ class DayView(QWidget):
                 start_time=start_time if mode == "fixed_time" else None,
                 end_time=end_time if mode == "fixed_time" else None,
                 duration_minutes=duration_minutes,
-                weekdays="0,1,2,3,4,5,6",
+                weekdays=weekdays,
                 remind_start=int(self.routine_remind_start_input.isChecked()),
                 remind_end=int(self.routine_remind_end_input.isChecked()),
                 note=note,
@@ -365,6 +417,28 @@ class DayView(QWidget):
         self._clear_daily_log_inputs()
         self.refresh()
         self.status_label.setText("日次ログを保存しました。")
+
+    def record_selected_missing_log_as_zero(self) -> None:
+        missing_log_ref = self._selected_missing_log_ref()
+        if missing_log_ref is None:
+            self.status_label.setText("0分として記録する未入力ログを選択してください。")
+            return
+
+        log_date, a_task_id = missing_log_ref
+        try:
+            upsert_daily_log(
+                log_date=log_date,
+                a_task_id=a_task_id,
+                actual_minutes=0,
+                reflection="未実施",
+            )
+            recompute_remaining_minutes(a_task_id)
+        except Exception as exc:
+            self.status_label.setText(f"0分ログの保存に失敗しました: {exc}")
+            return
+
+        self.refresh()
+        self.status_label.setText("0分ログを記録しました。")
 
     def delete_selected_task(self) -> None:
         a_task_id = self._selected_row_id(self.tasks_table)
@@ -448,6 +522,16 @@ class DayView(QWidget):
         form.addRow(self.add_task_button)
         return group
 
+    def _build_update_task_total_form(self) -> QGroupBox:
+        group = QGroupBox("A想定時間更新")
+        form = QFormLayout(group)
+
+        self.task_total_update_input.setPlaceholderText("例: 1800")
+
+        form.addRow("新しい想定総時間(分)", self.task_total_update_input)
+        form.addRow(self.update_task_total_button)
+        return group
+
     def _build_add_event_form(self) -> QGroupBox:
         group = QGroupBox("B予定追加")
         form = QFormLayout(group)
@@ -477,14 +561,21 @@ class DayView(QWidget):
         self.routine_duration_input.setPlaceholderText("例: 45")
         self.routine_note_input.setPlaceholderText("例: 毎日")
         self.routine_everyday_input.setChecked(True)
-        self.routine_everyday_input.setEnabled(False)
+        self.routine_repeat_hint_label.setWordWrap(True)
+
+        repeat_widget = QWidget()
+        repeat_layout = QHBoxLayout(repeat_widget)
+        repeat_layout.setContentsMargins(0, 0, 0, 0)
+        repeat_layout.addWidget(self.routine_everyday_input)
+        repeat_layout.addWidget(self.routine_repeat_hint_label)
+        repeat_layout.addStretch(1)
 
         form.addRow("mode", self.routine_mode_input)
         form.addRow("タイトル", self.routine_title_input)
         form.addRow("開始時刻", self.routine_start_input)
         form.addRow("終了時刻", self.routine_end_input)
         form.addRow("所要時間(分)", self.routine_duration_input)
-        form.addRow("繰り返し", self.routine_everyday_input)
+        form.addRow("繰り返し", repeat_widget)
         form.addRow("開始リマインド", self.routine_remind_start_input)
         form.addRow("終了リマインド", self.routine_remind_end_input)
         form.addRow("メモ", self.routine_note_input)
@@ -518,6 +609,7 @@ class DayView(QWidget):
 
     def _set_table_minimum_heights(self) -> None:
         self.events_table.setMinimumHeight(150)
+        self.missing_logs_table.setMinimumHeight(110)
         self.duration_only_table.setMinimumHeight(120)
         self.tasks_table.setMinimumHeight(170)
         self.allocations_table.setMinimumHeight(170)
@@ -544,6 +636,17 @@ class DayView(QWidget):
         layout.addWidget(self.capacity_summary_label)
         return group
 
+    def _wrap_missing_logs(self) -> QGroupBox:
+        group = QGroupBox("未入力ログ")
+        layout = QVBoxLayout(group)
+        layout.addWidget(self.missing_logs_summary_label)
+        layout.addWidget(self.missing_logs_table)
+        actions = QHBoxLayout()
+        actions.addStretch(1)
+        actions.addWidget(self.record_zero_missing_log_button)
+        layout.addLayout(actions)
+        return group
+
     def _wrap_duration_only_table(self) -> QGroupBox:
         group = QGroupBox("時間未指定C")
         layout = QVBoxLayout(group)
@@ -559,10 +662,14 @@ class DayView(QWidget):
 
     def _clear_tables(self) -> None:
         self.displayed_event_refs = []
+        self.displayed_missing_log_refs = []
         self.capacity_summary_label.clear()
+        self.missing_logs_summary_label.setText("未入力ログなし")
+        self.record_zero_missing_log_button.setEnabled(False)
         self.duration_only_summary_label.clear()
         for table in (
             self.events_table,
+            self.missing_logs_table,
             self.duration_only_table,
             self.tasks_table,
             self.allocations_table,
@@ -587,6 +694,33 @@ class DayView(QWidget):
             self.displayed_event_refs.append(_event_ref(event))
 
         self._set_rows(self.events_table, rows)
+
+    def _set_missing_logs(self, missing_logs: list[dict]) -> None:
+        self.displayed_missing_log_refs = []
+        rows = []
+
+        for missing_log in missing_logs:
+            rows.append(
+                [
+                    str(missing_log["log_date"]),
+                    str(missing_log["title"]),
+                    str(missing_log["planned_minutes"]),
+                ]
+            )
+            self.displayed_missing_log_refs.append(
+                (str(missing_log["log_date"]), int(missing_log["a_task_id"]))
+            )
+
+        self._set_rows(self.missing_logs_table, rows)
+        if rows:
+            self.missing_logs_summary_label.setText(
+                f"前日のA割当に対する未入力ログ: {len(rows)}件"
+            )
+            self.record_zero_missing_log_button.setEnabled(True)
+            return
+
+        self.missing_logs_summary_label.setText("未入力ログなし")
+        self.record_zero_missing_log_button.setEnabled(False)
 
     def _set_capacity_summary(self, summary: dict) -> None:
         surplus_minutes = int(summary["surplus_minutes"])
@@ -625,14 +759,19 @@ class DayView(QWidget):
         self.tasks_table.setRowCount(len(tasks))
 
         for row_index, task in enumerate(tasks):
-            progress_percent = _task_progress_percent(task)
+            (
+                completed_minutes,
+                total_minutes,
+                display_percent,
+                bar_percent,
+            ) = _task_progress_values(task)
             values = [
                 str(task["id"]),
                 str(task["title"]),
                 str(task["deadline_date"]),
                 str(task["remaining_minutes"]),
                 str(task["daily_target_minutes"]),
-                f"{progress_percent}%",
+                f"{completed_minutes} / {total_minutes}分（{display_percent:.1f}%）",
             ]
 
             for column_index, value in enumerate(values):
@@ -644,8 +783,8 @@ class DayView(QWidget):
 
             progress_bar = QProgressBar()
             progress_bar.setRange(0, 100)
-            progress_bar.setValue(progress_percent)
-            progress_bar.setFormat(f"{progress_percent}%")
+            progress_bar.setValue(bar_percent)
+            progress_bar.setFormat(f"{display_percent:.1f}%")
             self.tasks_table.setCellWidget(row_index, 6, progress_bar)
 
     def _set_allocations(self, allocations: list[dict]) -> None:
@@ -744,6 +883,70 @@ class DayView(QWidget):
             return None
         return self.displayed_event_refs[row]
 
+    def _selected_missing_log_ref(self) -> tuple[str, int] | None:
+        row = self.missing_logs_table.currentRow()
+        if row < 0 or row >= len(self.displayed_missing_log_refs):
+            return None
+        return self.displayed_missing_log_refs[row]
+
+    def _build_missing_logs_for_previous_day(self, tasks: list[dict]) -> list[dict]:
+        previous_date = (
+            date.fromisoformat(self.target_date) - timedelta(days=1)
+        ).isoformat()
+        allocations = self._build_allocations_for_date(previous_date, tasks)
+        planned_by_task: dict[int, dict] = {}
+
+        for allocation in allocations:
+            a_task_id = int(allocation["a_task_id"])
+            planned = planned_by_task.setdefault(
+                a_task_id,
+                {
+                    "log_date": previous_date,
+                    "a_task_id": a_task_id,
+                    "title": str(allocation["title"]),
+                    "planned_minutes": 0,
+                },
+            )
+            planned["planned_minutes"] += int(allocation["minutes"])
+
+        missing_logs = []
+        for planned in planned_by_task.values():
+            if has_daily_log(previous_date, int(planned["a_task_id"])):
+                continue
+            missing_logs.append(planned)
+
+        return sorted(
+            missing_logs,
+            key=lambda item: (str(item["log_date"]), str(item["title"]), int(item["a_task_id"])),
+        )
+
+    def _build_allocations_for_date(
+        self,
+        target_date: str,
+        tasks: list[dict],
+    ) -> list[dict]:
+        events = [
+            dict(event, source="event")
+            for event in list_events_by_date(target_date)
+            if event["type"] == "B"
+        ]
+        routine_events = list_routine_events_for_date(target_date)
+        fixed_time_routines = [
+            event for event in routine_events
+            if event.get("mode") == "fixed_time"
+        ]
+        scheduled_events = sorted(
+            events + fixed_time_routines,
+            key=lambda event: (str(event.get("start_dt", "")), _event_display_id(event)),
+        )
+        busy_blocks = build_busy_blocks(scheduled_events)
+        free_blocks = build_free_blocks(target_date, busy_blocks)
+        return allocate_tasks_to_free_blocks(
+            tasks=tasks,
+            free_blocks=free_blocks,
+            today=target_date,
+        )
+
     def _confirm_delete(self, target: str) -> bool:
         result = QMessageBox.question(
             self,
@@ -779,6 +982,26 @@ class DayView(QWidget):
 
         if total_minutes <= 0:
             return "必要時間は1分以上で入力してください。"
+
+        return None
+
+    def _validate_task_total_update_input(
+        self,
+        a_task_id: int | None,
+        new_total_minutes_text: str,
+    ) -> str | None:
+        if a_task_id is None:
+            return "更新するAタスクを選択してください。"
+        if not new_total_minutes_text:
+            return "新しい想定総時間を入力してください。"
+
+        try:
+            new_total_minutes = int(new_total_minutes_text)
+        except ValueError:
+            return "新しい想定総時間は整数で入力してください。"
+
+        if new_total_minutes <= 0:
+            return "新しい想定総時間は1分以上で入力してください。"
 
         return None
 
@@ -929,6 +1152,7 @@ class DayView(QWidget):
         self.routine_remind_end_input.setChecked(False)
         self.routine_note_input.clear()
         self._update_routine_mode_inputs()
+        self._update_routine_repeat_hint()
 
     def _update_routine_mode_inputs(self) -> None:
         is_fixed_time = self.routine_mode_input.currentText().strip() == "fixed_time"
@@ -937,6 +1161,19 @@ class DayView(QWidget):
         self.routine_remind_start_input.setEnabled(is_fixed_time)
         self.routine_remind_end_input.setEnabled(is_fixed_time)
         self.routine_duration_input.setEnabled(not is_fixed_time)
+
+    def _update_routine_repeat_hint(self) -> None:
+        if self.routine_everyday_input.isChecked():
+            self.routine_repeat_hint_label.setText("ON: 毎日繰り返し")
+            return
+
+        self.routine_repeat_hint_label.setText("OFF: 対象曜日のみ繰り返し")
+
+    def _routine_weekdays_from_repeat_setting(self) -> str:
+        if self.routine_everyday_input.isChecked():
+            return EVERYDAY_WEEKDAYS
+
+        return str(date.fromisoformat(self.target_date).weekday())
 
     def _clear_daily_log_inputs(self) -> None:
         self.log_date_input.setText(self.target_date)
@@ -970,15 +1207,18 @@ def _datetime_minute_key(value: str) -> str | None:
     return parsed.strftime("%Y-%m-%dT%H:%M")
 
 
-def _task_progress_percent(task: dict) -> int:
+def _task_progress_values(task: dict) -> tuple[int, int, float, int]:
     total_minutes = int(task.get("total_minutes", 0))
     remaining_minutes = int(task.get("remaining_minutes", 0))
     if total_minutes <= 0:
-        return 0
+        return (0, 0, 0.0, 0)
 
-    progress = (total_minutes - remaining_minutes) / total_minutes
-    clamped_progress = max(0.0, min(progress, 1.0))
-    return int(round(clamped_progress * 100))
+    completed_minutes = max(total_minutes - remaining_minutes, 0)
+    progress = (total_minutes - remaining_minutes) / total_minutes * 100
+    progress = max(0.0, min(progress, 100.0))
+    display_percent = int(progress * 10 + 0.5) / 10
+    bar_percent = int(progress)
+    return (completed_minutes, total_minutes, display_percent, bar_percent)
 
 
 def _event_source(event: dict) -> str:
