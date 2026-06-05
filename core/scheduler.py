@@ -4,6 +4,8 @@ from datetime import date, datetime, time, timedelta
 
 TimeBlock = tuple[datetime, datetime]
 
+DEFAULT_GRANULARITY_MINUTES = 15
+
 
 def parse_date(d: str) -> date:
     # DBでは日付を "YYYY-MM-DD" 形式の文字列で持つ。
@@ -40,12 +42,16 @@ def compute_daily_target_minutes(
     # ceil(a/b) = (a + b - 1) // b
     return (remaining_minutes + remaining_days - 1) // remaining_days
 
-def round_up_to_granularity(minutes: int, granularity: int = 30) -> int:
+def round_up_to_granularity(
+    minutes: int,
+    granularity: int = DEFAULT_GRANULARITY_MINUTES,
+) -> int:
     """
     minutes を granularity 分単位で切り上げる。
     例:
-      1〜30  -> 30
-      31〜60 -> 60
+      granularity=15 の場合:
+      1〜15  -> 15
+      16〜30 -> 30
       0      -> 0
     """
     if minutes < 0:
@@ -62,10 +68,10 @@ def compute_daily_target_rounded_minutes(
     remaining_minutes: int,
     deadline_date: str,
     today: str | None = None,
-    granularity: int = 30,
+    granularity: int = DEFAULT_GRANULARITY_MINUTES,
 ) -> int:
     """
-    日割りした推奨時間を30分単位に切り上げる。
+    日割りした推奨時間を指定粒度に切り上げる。
     """
     raw = compute_daily_target_minutes(
         remaining_minutes=remaining_minutes,
@@ -78,7 +84,7 @@ def compute_daily_target_rounded_minutes(
 def attach_daily_targets_to_tasks(
     tasks: list[dict],
     today: str | None = None,
-    granularity: int = 30,
+    granularity: int = DEFAULT_GRANULARITY_MINUTES,
 ) -> list[dict]:
     """
     list_a_tasks() の結果に daily_target_minutes を付ける。
@@ -322,7 +328,7 @@ def allocate_task_to_free_blocks(
     task: dict,
     free_blocks: list[TimeBlock],
     target_minutes: int,
-    granularity: int = 30,
+    granularity: int = DEFAULT_GRANULARITY_MINUTES,
 ) -> list[dict]:
     """
     1つのAタスクの推奨分をfree_blocksに前から順に割り当てる。
@@ -342,7 +348,7 @@ def allocate_task_to_free_blocks(
 
         block_minutes = int((block_end - block_start).total_seconds() // 60)
 
-        # 30分未満の空きは捨てる
+        # 指定粒度未満の空きは捨てる。
         usable_minutes = (block_minutes // granularity) * granularity
 
         if usable_minutes <= 0:
@@ -371,7 +377,7 @@ def allocate_tasks_to_free_blocks(
     tasks: list[dict],
     free_blocks: list[TimeBlock],
     today: str,
-    granularity: int = 30,
+    granularity: int = DEFAULT_GRANULARITY_MINUTES,
 ) -> list[dict]:
     """
     複数Aタスクを締切が近い順にfree_blocksへ割り当てる。

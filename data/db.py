@@ -9,6 +9,7 @@ from typing import Optional, Iterable
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_DB_PATH = PROJECT_ROOT / "data" / "app.db"
 DEFAULT_SCHEMA_PATH = PROJECT_ROOT / "data" / "schema.sql"
+A_TASK_STATUSES = {"active", "completed", "incomplete"}
 
 
 def connect(db_path: Path = DEFAULT_DB_PATH) -> sqlite3.Connection:
@@ -28,8 +29,10 @@ def init_db(
 
     conn = connect(db_path)
     try:
+        _ensure_a_tasks_status_column(conn)
         sql = schema_path.read_text(encoding="utf-8")
         conn.executescript(sql)
+        _ensure_a_tasks_status_column(conn)
         conn.commit()
     finally:
         conn.close()
@@ -62,12 +65,42 @@ def insert_a_task(
 def list_a_tasks(db_path: Path = DEFAULT_DB_PATH) -> list[dict]:
     conn = connect(db_path)
     try:
+        _ensure_a_tasks_status_column(conn)
         rows = conn.execute(
             """
-            SELECT id, title, deadline_date, total_minutes, remaining_minutes, created_at
+            SELECT
+              id, title, deadline_date, total_minutes,
+              remaining_minutes, status, created_at
             FROM a_tasks
+            WHERE status = 'active'
             ORDER BY deadline_date ASC, id ASC
             """
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def list_expired_active_a_tasks(
+    target_date: str,
+    db_path: Path = DEFAULT_DB_PATH,
+) -> list[dict]:
+    date.fromisoformat(target_date)
+
+    conn = connect(db_path)
+    try:
+        _ensure_a_tasks_status_column(conn)
+        rows = conn.execute(
+            """
+            SELECT
+              id, title, deadline_date, total_minutes,
+              remaining_minutes, status, created_at
+            FROM a_tasks
+            WHERE status = 'active'
+              AND deadline_date < ?
+            ORDER BY deadline_date ASC, id ASC
+            """,
+            (target_date,),
         ).fetchall()
         return [dict(r) for r in rows]
     finally:
@@ -147,6 +180,7 @@ def update_a_task_total_minutes(
 
     conn = connect(db_path)
     try:
+        _ensure_a_tasks_status_column(conn)
         row = conn.execute(
             "SELECT id FROM a_tasks WHERE id = ?",
             (a_task_id,),
@@ -171,6 +205,28 @@ def update_a_task_total_minutes(
         )
         conn.commit()
         return remaining
+    finally:
+        conn.close()
+
+
+def update_a_task_status(
+    a_task_id: int,
+    status: str,
+    db_path: Path = DEFAULT_DB_PATH,
+) -> None:
+    if status not in A_TASK_STATUSES:
+        raise ValueError("status must be active, completed, or incomplete")
+
+    conn = connect(db_path)
+    try:
+        _ensure_a_tasks_status_column(conn)
+        cur = conn.execute(
+            "UPDATE a_tasks SET status = ? WHERE id = ?",
+            (status, a_task_id),
+        )
+        if cur.rowcount == 0:
+            raise ValueError(f"a_task_id not found: {a_task_id}")
+        conn.commit()
     finally:
         conn.close()
 
@@ -388,6 +444,30 @@ def insert_event(
         return int(cur.lastrowid)
     finally:
         conn.close()
+
+
+def _ensure_a_tasks_status_column(conn: sqlite3.Connection) -> None:
+    table = conn.execute(
+        """
+        SELECT name
+        FROM sqlite_master
+        WHERE type = 'table' AND name = 'a_tasks'
+        """
+    ).fetchone()
+    if table is None:
+        return
+
+    columns = {
+        str(row["name"])
+        for row in conn.execute("PRAGMA table_info(a_tasks)").fetchall()
+    }
+    if "status" in columns:
+        return
+
+    conn.execute(
+        "ALTER TABLE a_tasks ADD COLUMN status TEXT NOT NULL DEFAULT 'active'"
+    )
+    conn.commit()
 
 
 def _parse_hhmm(value: str | None) -> time | None:

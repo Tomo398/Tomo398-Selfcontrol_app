@@ -47,6 +47,8 @@ CREATE TABLE IF NOT EXISTS a_tasks (
   deadline_date TEXT NOT NULL, -- YYYY-MM-DD
   total_minutes INTEGER NOT NULL CHECK(total_minutes >= 0),
   remaining_minutes INTEGER NOT NULL CHECK(remaining_minutes >= 0),
+  status TEXT NOT NULL DEFAULT 'active'
+    CHECK(status IN ('active', 'completed', 'incomplete')),
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -67,4 +69,5 @@ CREATE INDEX IF NOT EXISTS idx_events_start ON events(start_dt);
 CREATE INDEX IF NOT EXISTS idx_events_type  ON events(type);
 CREATE INDEX IF NOT EXISTS idx_routine_events_mode ON routine_events(mode);
 CREATE INDEX IF NOT EXISTS idx_tasks_deadline ON a_tasks(deadline_date);
+CREATE INDEX IF NOT EXISTS idx_tasks_status ON a_tasks(status);
 CREATE INDEX IF NOT EXISTS idx_logs_date ON daily_logs(log_date);

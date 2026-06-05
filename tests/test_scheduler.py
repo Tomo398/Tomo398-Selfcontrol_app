@@ -17,11 +17,11 @@ def dt(hour: int, minute: int = 0) -> datetime:
 def test_compute_daily_target_rounded_minutes_rounds_up_to_granularity() -> None:
     assert (
         compute_daily_target_rounded_minutes(
-            remaining_minutes=100,
+            remaining_minutes=20,
             deadline_date="2026-04-23",
             today="2026-04-20",
         )
-        == 30
+        == 15
     )
 
 
@@ -108,7 +108,7 @@ def test_allocate_task_to_free_blocks_uses_free_blocks_in_order() -> None:
         (dt(10, 30), dt(12)),
     ]
 
-    # MVP rule: ignore blocks shorter than 30 minutes and allocate from the front.
+    # MVP rule: ignore blocks shorter than the granularity and allocate from the front.
     assert allocate_task_to_free_blocks(
         task=task,
         free_blocks=free_blocks,
@@ -117,16 +117,16 @@ def test_allocate_task_to_free_blocks_uses_free_blocks_in_order() -> None:
         {
             "a_task_id": 1,
             "title": "Report",
-            "start": "2026-04-20T09:00:00",
-            "end": "2026-04-20T10:00:00",
-            "minutes": 60,
+            "start": "2026-04-20T08:00:00",
+            "end": "2026-04-20T08:15:00",
+            "minutes": 15,
         },
         {
             "a_task_id": 1,
             "title": "Report",
-            "start": "2026-04-20T10:30:00",
-            "end": "2026-04-20T11:00:00",
-            "minutes": 30,
+            "start": "2026-04-20T09:00:00",
+            "end": "2026-04-20T10:00:00",
+            "minutes": 60,
         },
     ]
 
@@ -156,14 +156,14 @@ def test_allocate_tasks_to_free_blocks_allocates_by_deadline_order() -> None:
             "a_task_id": 2,
             "title": "Sooner",
             "start": "2026-04-20T08:00:00",
-            "end": "2026-04-20T09:00:00",
-            "minutes": 60,
+            "end": "2026-04-20T08:45:00",
+            "minutes": 45,
         },
         {
             "a_task_id": 1,
             "title": "Later",
-            "start": "2026-04-20T09:00:00",
-            "end": "2026-04-20T10:00:00",
+            "start": "2026-04-20T08:45:00",
+            "end": "2026-04-20T09:45:00",
             "minutes": 60,
         },
     ]

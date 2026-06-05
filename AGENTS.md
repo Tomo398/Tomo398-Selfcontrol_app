@@ -25,7 +25,7 @@ Main MVP loop:
 - Python
 - PySide6 for desktop UI
 - SQLite via Python standard sqlite3
-- 30-minute scheduling granularity
+- 15-minute scheduling granularity
 - Local-only MVP
 - VS Code
 
@@ -56,7 +56,7 @@ Main MVP loop:
 - Insert/list/delete B/C events.
 - Upsert daily logs.
 - Recompute remaining minutes.
-- Compute daily target minutes rounded to 30 minutes.
+- Compute daily target minutes rounded to 15 minutes.
 - Build busy blocks from B/C events.
 - Build free blocks.
 - Allocate multiple A tasks into free blocks in deadline order.

@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
 )
 
 from core.scheduler import (
+    DEFAULT_GRANULARITY_MINUTES,
     allocate_tasks_to_free_blocks,
     attach_daily_targets_to_tasks,
     build_busy_blocks,
@@ -40,9 +41,11 @@ from data.db import (
     has_daily_log,
     list_a_tasks,
     list_events_by_date,
+    list_expired_active_a_tasks,
     list_routine_events_for_date,
     recompute_remaining_minutes,
     update_a_task_total_minutes,
+    update_a_task_status,
     upsert_daily_log,
 )
 
@@ -58,6 +61,7 @@ class DayView(QWidget):
         self.notified_reminder_keys: set[str] = set()
         self.displayed_event_refs: list[tuple[str, int]] = []
         self.displayed_missing_log_refs: list[tuple[str, int]] = []
+        self.displayed_expired_task_ids: list[int] = []
 
         self.date_label = QLabel()
         self.target_date_input = QLineEdit(self.target_date)
@@ -97,13 +101,21 @@ class DayView(QWidget):
         self.delete_task_button = QPushButton("選択Aタスク削除")
         self.delete_event_button = QPushButton("選択B/C予定削除")
         self.record_zero_missing_log_button = QPushButton("0分として記録")
+        self.mark_expired_task_completed_button = QPushButton("完了にする")
+        self.mark_expired_task_incomplete_button = QPushButton("未完了にする")
+        self.granularity_label = QLabel(f"計算粒度: {DEFAULT_GRANULARITY_MINUTES}分")
         self.capacity_summary_label = QLabel()
         self.capacity_summary_label.setWordWrap(True)
+        self.expired_tasks_summary_label = QLabel()
+        self.expired_tasks_summary_label.setWordWrap(True)
         self.missing_logs_summary_label = QLabel()
         self.missing_logs_summary_label.setWordWrap(True)
         self.duration_only_summary_label = QLabel()
 
         self.events_table = self._create_table(["ID", "種別", "タイトル", "開始", "終了", "メモ"])
+        self.expired_tasks_table = self._create_table(
+            ["タスク名", "締切", "総時間", "残り時間", "進捗"]
+        )
         self.missing_logs_table = self._create_table(["日付", "Aタスク名", "予定分数"])
         self.duration_only_table = self._create_table(["ID", "タイトル", "所要時間(分)", "メモ"])
         self.tasks_table = self._create_table(
@@ -130,6 +142,12 @@ class DayView(QWidget):
         self.record_zero_missing_log_button.clicked.connect(
             self.record_selected_missing_log_as_zero
         )
+        self.mark_expired_task_completed_button.clicked.connect(
+            self.mark_selected_expired_task_completed
+        )
+        self.mark_expired_task_incomplete_button.clicked.connect(
+            self.mark_selected_expired_task_incomplete
+        )
         self._update_routine_mode_inputs()
         self._update_routine_repeat_hint()
         self.refresh()
@@ -152,6 +170,7 @@ class DayView(QWidget):
         content_layout.addWidget(self._build_date_controls())
         content_layout.addWidget(self._wrap_capacity_summary())
         content_layout.addWidget(self._wrap_missing_logs())
+        content_layout.addWidget(self._wrap_expired_tasks())
         content_layout.addWidget(
             self._wrap_table(
                 "B単発予定 + fixed_time C",
@@ -201,7 +220,9 @@ class DayView(QWidget):
             )
             busy_blocks = build_busy_blocks(scheduled_events)
             free_blocks = build_free_blocks(self.target_date, busy_blocks)
-            tasks = list_a_tasks()
+            active_tasks = list_a_tasks()
+            expired_tasks = list_expired_active_a_tasks(self.target_date)
+            tasks = _tasks_available_on_date(active_tasks, self.target_date)
             tasks_with_targets = attach_daily_targets_to_tasks(tasks, today=self.target_date)
             allocations = allocate_tasks_to_free_blocks(
                 tasks=tasks,
@@ -214,7 +235,7 @@ class DayView(QWidget):
                 tasks_with_targets=tasks_with_targets,
                 allocations=allocations,
             )
-            missing_logs = self._build_missing_logs_for_previous_day(tasks)
+            missing_logs = self._build_missing_logs_for_previous_day(active_tasks)
         except Exception as exc:
             self._clear_tables()
             self.status_label.setText(f"読み込みに失敗しました: {exc}")
@@ -222,6 +243,7 @@ class DayView(QWidget):
 
         self._set_events(scheduled_events)
         self._set_missing_logs(missing_logs)
+        self._set_expired_tasks(expired_tasks)
         self._set_capacity_summary(capacity_summary)
         self._set_duration_only_routines(
             duration_only_routines,
@@ -235,7 +257,8 @@ class DayView(QWidget):
         self.status_label.setText(
             f"B/C予定 {len(scheduled_events)}件 / 時間未指定C 合計 "
             f"{capacity_summary['floating_c_minutes']}分 / Aタスク {len(tasks)}件 / "
-            f"割当 {len(allocations)}件 / 未入力ログ {len(missing_logs)}件{capacity_status}"
+            f"割当 {len(allocations)}件 / 未入力ログ {len(missing_logs)}件 / "
+            f"期限切れA {len(expired_tasks)}件{capacity_status}"
         )
 
     def _apply_target_date_from_input(self) -> str | None:
@@ -440,6 +463,27 @@ class DayView(QWidget):
         self.refresh()
         self.status_label.setText("0分ログを記録しました。")
 
+    def mark_selected_expired_task_completed(self) -> None:
+        self._update_selected_expired_task_status("completed", "完了")
+
+    def mark_selected_expired_task_incomplete(self) -> None:
+        self._update_selected_expired_task_status("incomplete", "未完了")
+
+    def _update_selected_expired_task_status(self, status: str, label: str) -> None:
+        a_task_id = self._selected_expired_task_id()
+        if a_task_id is None:
+            self.status_label.setText("期限切れAタスクを選択してください。")
+            return
+
+        try:
+            update_a_task_status(a_task_id, status)
+        except Exception as exc:
+            self.status_label.setText(f"期限切れAタスクの更新に失敗しました: {exc}")
+            return
+
+        self.refresh()
+        self.status_label.setText(f"期限切れAタスクを{label}にしました。")
+
     def delete_selected_task(self) -> None:
         a_task_id = self._selected_row_id(self.tasks_table)
         if a_task_id is None:
@@ -609,6 +653,7 @@ class DayView(QWidget):
 
     def _set_table_minimum_heights(self) -> None:
         self.events_table.setMinimumHeight(150)
+        self.expired_tasks_table.setMinimumHeight(120)
         self.missing_logs_table.setMinimumHeight(110)
         self.duration_only_table.setMinimumHeight(120)
         self.tasks_table.setMinimumHeight(170)
@@ -633,7 +678,20 @@ class DayView(QWidget):
     def _wrap_capacity_summary(self) -> QGroupBox:
         group = QGroupBox("容量サマリー")
         layout = QVBoxLayout(group)
+        layout.addWidget(self.granularity_label)
         layout.addWidget(self.capacity_summary_label)
+        return group
+
+    def _wrap_expired_tasks(self) -> QGroupBox:
+        group = QGroupBox("期限切れAタスク")
+        layout = QVBoxLayout(group)
+        layout.addWidget(self.expired_tasks_summary_label)
+        layout.addWidget(self.expired_tasks_table)
+        actions = QHBoxLayout()
+        actions.addStretch(1)
+        actions.addWidget(self.mark_expired_task_completed_button)
+        actions.addWidget(self.mark_expired_task_incomplete_button)
+        layout.addLayout(actions)
         return group
 
     def _wrap_missing_logs(self) -> QGroupBox:
@@ -663,12 +721,17 @@ class DayView(QWidget):
     def _clear_tables(self) -> None:
         self.displayed_event_refs = []
         self.displayed_missing_log_refs = []
+        self.displayed_expired_task_ids = []
         self.capacity_summary_label.clear()
+        self.expired_tasks_summary_label.setText("期限切れAタスクなし")
+        self.mark_expired_task_completed_button.setEnabled(False)
+        self.mark_expired_task_incomplete_button.setEnabled(False)
         self.missing_logs_summary_label.setText("未入力ログなし")
         self.record_zero_missing_log_button.setEnabled(False)
         self.duration_only_summary_label.clear()
         for table in (
             self.events_table,
+            self.expired_tasks_table,
             self.missing_logs_table,
             self.duration_only_table,
             self.tasks_table,
@@ -694,6 +757,41 @@ class DayView(QWidget):
             self.displayed_event_refs.append(_event_ref(event))
 
         self._set_rows(self.events_table, rows)
+
+    def _set_expired_tasks(self, tasks: list[dict]) -> None:
+        self.displayed_expired_task_ids = []
+        rows = []
+
+        for task in tasks:
+            (
+                completed_minutes,
+                total_minutes,
+                display_percent,
+                _bar_percent,
+            ) = _task_progress_values(task)
+            rows.append(
+                [
+                    str(task["title"]),
+                    str(task["deadline_date"]),
+                    str(total_minutes),
+                    str(task["remaining_minutes"]),
+                    f"{completed_minutes} / {total_minutes}分（{display_percent:.1f}%）",
+                ]
+            )
+            self.displayed_expired_task_ids.append(int(task["id"]))
+
+        self._set_rows(self.expired_tasks_table, rows)
+        if rows:
+            self.expired_tasks_summary_label.setText(
+                f"完了または未完了として閉じてください: {len(rows)}件"
+            )
+            self.mark_expired_task_completed_button.setEnabled(True)
+            self.mark_expired_task_incomplete_button.setEnabled(True)
+            return
+
+        self.expired_tasks_summary_label.setText("期限切れAタスクなし")
+        self.mark_expired_task_completed_button.setEnabled(False)
+        self.mark_expired_task_incomplete_button.setEnabled(False)
 
     def _set_missing_logs(self, missing_logs: list[dict]) -> None:
         self.displayed_missing_log_refs = []
@@ -889,11 +987,20 @@ class DayView(QWidget):
             return None
         return self.displayed_missing_log_refs[row]
 
+    def _selected_expired_task_id(self) -> int | None:
+        row = self.expired_tasks_table.currentRow()
+        if row < 0 or row >= len(self.displayed_expired_task_ids):
+            return None
+        return self.displayed_expired_task_ids[row]
+
     def _build_missing_logs_for_previous_day(self, tasks: list[dict]) -> list[dict]:
         previous_date = (
             date.fromisoformat(self.target_date) - timedelta(days=1)
         ).isoformat()
-        allocations = self._build_allocations_for_date(previous_date, tasks)
+        allocations = self._build_allocations_for_date(
+            previous_date,
+            _tasks_available_on_date(tasks, previous_date),
+        )
         planned_by_task: dict[int, dict] = {}
 
         for allocation in allocations:
@@ -1219,6 +1326,14 @@ def _task_progress_values(task: dict) -> tuple[int, int, float, int]:
     display_percent = int(progress * 10 + 0.5) / 10
     bar_percent = int(progress)
     return (completed_minutes, total_minutes, display_percent, bar_percent)
+
+
+def _tasks_available_on_date(tasks: list[dict], target_date: str) -> list[dict]:
+    return [
+        task
+        for task in tasks
+        if str(task["deadline_date"]) >= target_date
+    ]
 
 
 def _event_source(event: dict) -> str:
