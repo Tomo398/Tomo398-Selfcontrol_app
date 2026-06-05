@@ -64,6 +64,12 @@ CREATE TABLE IF NOT EXISTS daily_logs (
   UNIQUE (log_date, a_task_id)
 );
 
+-- アプリ内設定
+CREATE TABLE IF NOT EXISTS settings (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
+
 -- 便利なインデックス（最低限）
 CREATE INDEX IF NOT EXISTS idx_events_start ON events(start_dt);
 CREATE INDEX IF NOT EXISTS idx_events_type  ON events(type);

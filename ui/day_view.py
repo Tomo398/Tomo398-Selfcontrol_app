@@ -36,6 +36,7 @@ from data.db import (
     delete_a_task,
     delete_event,
     delete_routine_event,
+    get_setting,
     insert_a_task,
     insert_event,
     insert_routine_event,
@@ -45,6 +46,7 @@ from data.db import (
     list_expired_active_a_tasks,
     list_routine_events_for_date,
     recompute_remaining_minutes,
+    set_setting,
     update_a_task_total_minutes,
     update_a_task_status,
     upsert_daily_log,
@@ -52,6 +54,10 @@ from data.db import (
 
 
 EVERYDAY_WEEKDAYS = "0,1,2,3,4,5,6"
+MORNING_CHECK_TIME_KEY = "morning_check_time"
+NIGHT_LOG_TIME_KEY = "night_log_time"
+DEFAULT_MORNING_CHECK_TIME = "08:00"
+DEFAULT_NIGHT_LOG_TIME = "23:00"
 
 
 class DayView(QWidget):
@@ -60,6 +66,7 @@ class DayView(QWidget):
         self.target_date = target_date or date.today().isoformat()
         self.reminder_targets: list[dict[str, str]] = []
         self.notified_reminder_keys: set[str] = set()
+        self.notified_check_reminder_keys: set[str] = set()
         self.displayed_event_refs: list[tuple[str, int]] = []
         self.displayed_missing_log_refs: list[tuple[str, int]] = []
         self.displayed_expired_task_ids: list[int] = []
@@ -108,6 +115,9 @@ class DayView(QWidget):
         self.reminder_summary_label = QLabel()
         self.reminder_summary_label.setWordWrap(True)
         self.reminder_summary_label.setText("現在のリマインド対象: 0件")
+        self.morning_check_time_input = QLineEdit()
+        self.night_log_time_input = QLineEdit()
+        self.save_check_times_button = QPushButton("確認時刻を保存")
         self.capacity_summary_label = QLabel()
         self.capacity_summary_label.setWordWrap(True)
         self.expired_tasks_summary_label = QLabel()
@@ -139,6 +149,7 @@ class DayView(QWidget):
         )
         self.tasks_table.setColumnHidden(0, True)
         self._set_table_minimum_heights()
+        self._load_check_reminder_settings()
         self._sync_target_date_inputs()
 
         self._build_layout()
@@ -162,6 +173,7 @@ class DayView(QWidget):
         self.mark_expired_task_incomplete_button.clicked.connect(
             self.mark_selected_expired_task_incomplete
         )
+        self.save_check_times_button.clicked.connect(self.save_check_reminder_settings)
         self._update_routine_mode_inputs()
         self._update_routine_repeat_hint()
         self.refresh()
@@ -572,8 +584,34 @@ class DayView(QWidget):
         self.status_label.setText("B/C予定を削除しました。")
 
     def check_reminders(self) -> None:
-        current_minute = datetime.now().strftime("%Y-%m-%dT%H:%M")
+        now = datetime.now()
+        current_date = now.date().isoformat()
+        current_time = now.strftime("%H:%M")
+        current_minute = now.strftime("%Y-%m-%dT%H:%M")
         messages = []
+
+        check_reminders = [
+            (
+                "morning",
+                self.morning_check_time,
+                "今日の予定を確認してください",
+            ),
+            (
+                "night",
+                self.night_log_time,
+                "今日のAログを入力してください",
+            ),
+        ]
+        for reminder_type, reminder_time, message in check_reminders:
+            if current_time != reminder_time:
+                continue
+
+            key = f"{current_date}:{reminder_type}"
+            if key in self.notified_check_reminder_keys:
+                continue
+
+            self.notified_check_reminder_keys.add(key)
+            messages.append(message)
 
         for target in self.reminder_targets:
             if target["start_minute"] != current_minute:
@@ -586,6 +624,31 @@ class DayView(QWidget):
 
         if messages:
             self.status_label.setText("リマインド: " + " / ".join(messages))
+
+    def save_check_reminder_settings(self) -> None:
+        morning_time = _normalize_hhmm(self.morning_check_time_input.text())
+        night_time = _normalize_hhmm(self.night_log_time_input.text())
+
+        if morning_time is None:
+            self.status_label.setText("朝の予定確認時刻はHH:MM形式で入力してください。")
+            return
+        if night_time is None:
+            self.status_label.setText("夜のログ入力確認時刻はHH:MM形式で入力してください。")
+            return
+
+        try:
+            set_setting(MORNING_CHECK_TIME_KEY, morning_time)
+            set_setting(NIGHT_LOG_TIME_KEY, night_time)
+        except Exception as exc:
+            self.status_label.setText(f"確認時刻の保存に失敗しました: {exc}")
+            return
+
+        self.morning_check_time = morning_time
+        self.night_log_time = night_time
+        self.morning_check_time_input.setText(morning_time)
+        self.night_log_time_input.setText(night_time)
+        self._update_reminder_summary()
+        self.status_label.setText("確認時刻を保存しました。")
 
     def _build_date_controls(self) -> QGroupBox:
         group = QGroupBox("日付操作")
@@ -761,7 +824,20 @@ class DayView(QWidget):
     def _wrap_reminder_settings(self) -> QGroupBox:
         group = QGroupBox("アプリ内リマインド")
         layout = QVBoxLayout(group)
+        form = QFormLayout()
+
+        self.morning_check_time_input.setPlaceholderText("08:00")
+        self.night_log_time_input.setPlaceholderText("23:00")
+
+        form.addRow("朝の予定確認時刻", self.morning_check_time_input)
+        form.addRow("夜のログ入力確認時刻", self.night_log_time_input)
+
         layout.addWidget(self.reminder_summary_label)
+        layout.addLayout(form)
+        actions = QHBoxLayout()
+        actions.addStretch(1)
+        actions.addWidget(self.save_check_times_button)
+        layout.addLayout(actions)
         return group
 
     def _wrap_message(self) -> QGroupBox:
@@ -1007,7 +1083,7 @@ class DayView(QWidget):
             )
 
         self.reminder_targets = targets
-        self.reminder_summary_label.setText(f"現在のリマインド対象: {len(targets)}件")
+        self._update_reminder_summary()
 
     def _set_rows(self, table: QTableWidget, rows: list[list[str]]) -> None:
         table.setRowCount(len(rows))
@@ -1262,6 +1338,37 @@ class DayView(QWidget):
 
         return None
 
+    def _load_check_reminder_settings(self) -> None:
+        try:
+            morning_time = get_setting(
+                MORNING_CHECK_TIME_KEY,
+                DEFAULT_MORNING_CHECK_TIME,
+            )
+            night_time = get_setting(
+                NIGHT_LOG_TIME_KEY,
+                DEFAULT_NIGHT_LOG_TIME,
+            )
+        except Exception:
+            morning_time = DEFAULT_MORNING_CHECK_TIME
+            night_time = DEFAULT_NIGHT_LOG_TIME
+
+        self.morning_check_time = (
+            _normalize_hhmm(morning_time) or DEFAULT_MORNING_CHECK_TIME
+        )
+        self.night_log_time = (
+            _normalize_hhmm(night_time) or DEFAULT_NIGHT_LOG_TIME
+        )
+        self.morning_check_time_input.setText(self.morning_check_time)
+        self.night_log_time_input.setText(self.night_log_time)
+        self._update_reminder_summary()
+
+    def _update_reminder_summary(self) -> None:
+        self.reminder_summary_label.setText(
+            f"朝の予定確認: {self.morning_check_time} / "
+            f"夜のログ入力確認: {self.night_log_time} / "
+            f"現在のリマインド対象: {len(self.reminder_targets)}件"
+        )
+
     def _clear_event_inputs(self) -> None:
         self.event_title_input.clear()
         self.event_start_input.setText(f"{self.target_date}T09:00:00")
@@ -1359,6 +1466,23 @@ def _parse_routine_time(value: str) -> time | None:
         return datetime.strptime(value.strip(), "%H:%M").time()
     except ValueError:
         return None
+
+
+def _normalize_hhmm(value: str | None) -> str | None:
+    if value is None:
+        return None
+
+    text = value.strip()
+    if len(text) != 5 or text[2] != ":":
+        return None
+
+    try:
+        parsed = datetime.strptime(text, "%H:%M")
+    except ValueError:
+        return None
+
+    normalized = parsed.strftime("%H:%M")
+    return normalized if normalized == text else None
 
 
 def _datetime_minute_key(value: str) -> str | None:

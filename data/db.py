@@ -33,6 +33,7 @@ def init_db(
         sql = schema_path.read_text(encoding="utf-8")
         conn.executescript(sql)
         _ensure_a_tasks_status_column(conn)
+        _ensure_settings_table(conn)
         conn.commit()
     finally:
         conn.close()
@@ -226,6 +227,47 @@ def update_a_task_status(
         )
         if cur.rowcount == 0:
             raise ValueError(f"a_task_id not found: {a_task_id}")
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_setting(
+    key: str,
+    default: str | None = None,
+    db_path: Path = DEFAULT_DB_PATH,
+) -> str | None:
+    conn = connect(db_path)
+    try:
+        _ensure_settings_table(conn)
+        row = conn.execute(
+            "SELECT value FROM settings WHERE key = ?",
+            (key,),
+        ).fetchone()
+        if row is None:
+            return default
+        return str(row["value"])
+    finally:
+        conn.close()
+
+
+def set_setting(
+    key: str,
+    value: str,
+    db_path: Path = DEFAULT_DB_PATH,
+) -> None:
+    conn = connect(db_path)
+    try:
+        _ensure_settings_table(conn)
+        conn.execute(
+            """
+            INSERT INTO settings (key, value)
+            VALUES (?, ?)
+            ON CONFLICT(key) DO UPDATE SET
+              value = excluded.value
+            """,
+            (key, value),
+        )
         conn.commit()
     finally:
         conn.close()
@@ -466,6 +508,18 @@ def _ensure_a_tasks_status_column(conn: sqlite3.Connection) -> None:
 
     conn.execute(
         "ALTER TABLE a_tasks ADD COLUMN status TEXT NOT NULL DEFAULT 'active'"
+    )
+    conn.commit()
+
+
+def _ensure_settings_table(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS settings (
+          key TEXT PRIMARY KEY,
+          value TEXT NOT NULL
+        )
+        """
     )
     conn.commit()
 
