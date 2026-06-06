@@ -89,6 +89,7 @@ class DayView(QWidget):
         self.add_candidate_button = QPushButton("候補メモ追加")
         self.copy_candidate_to_task_button = QPushButton("選択候補をA追加フォームへコピー")
         self.task_title_input = QLineEdit()
+        self.task_start_input = QLineEdit()
         self.task_deadline_input = QLineEdit()
         self.task_minutes_input = QLineEdit()
         self.add_task_button = QPushButton("Aタスク追加")
@@ -151,12 +152,14 @@ class DayView(QWidget):
             [
                 "ID",
                 "タイトル",
+                "開始",
                 "締切",
                 "総時間(分)",
                 "残り(分)",
                 "進捗",
                 "進捗バー",
                 "今日の推奨(分)",
+                "備考",
             ]
         )
         self.allocations_table = self._create_table(
@@ -407,6 +410,7 @@ class DayView(QWidget):
             return
 
         self.task_title_input.setText(title)
+        self.task_start_input.setText(self.target_date)
         self.copied_candidate_id = candidate_id
         self.status_label.setText(
             "候補タイトルをAタスク追加フォームへコピーしました。締切日と必要時間を入力してください。"
@@ -414,10 +418,16 @@ class DayView(QWidget):
 
     def add_a_task(self) -> None:
         title = self.task_title_input.text().strip()
+        start_date = self.task_start_input.text().strip()
         deadline_date = self.task_deadline_input.text().strip()
         total_minutes_text = self.task_minutes_input.text().strip()
 
-        error = self._validate_a_task_input(title, deadline_date, total_minutes_text)
+        error = self._validate_a_task_input(
+            title,
+            start_date,
+            deadline_date,
+            total_minutes_text,
+        )
         if error:
             self.status_label.setText(error)
             return
@@ -426,6 +436,7 @@ class DayView(QWidget):
             total_minutes = int(total_minutes_text)
             insert_a_task(
                 title=title,
+                start_date=start_date,
                 deadline_date=deadline_date,
                 total_minutes=total_minutes,
             )
@@ -443,6 +454,7 @@ class DayView(QWidget):
 
         self.copied_candidate_id = None
         self.task_title_input.clear()
+        self.task_start_input.setText(self.target_date)
         self.task_deadline_input.setText(self.target_date)
         self.task_minutes_input.clear()
         self.refresh()
@@ -783,10 +795,12 @@ class DayView(QWidget):
         form = QFormLayout(group)
 
         self.task_title_input.setPlaceholderText("例: レポート作成")
+        self.task_start_input.setPlaceholderText("YYYY-MM-DD")
         self.task_deadline_input.setPlaceholderText("YYYY-MM-DD")
         self.task_minutes_input.setPlaceholderText("例: 120")
 
         form.addRow("タイトル", self.task_title_input)
+        form.addRow("開始日 YYYY-MM-DD", self.task_start_input)
         form.addRow("締切日", self.task_deadline_input)
         form.addRow("必要時間(分)", self.task_minutes_input)
         form.addRow(self.add_task_button)
@@ -1150,12 +1164,14 @@ class DayView(QWidget):
             values = [
                 str(task["id"]),
                 str(task["title"]),
+                str(task.get("start_date", "")),
                 str(task["deadline_date"]),
                 str(total_minutes),
                 str(task["remaining_minutes"]),
                 f"{completed_minutes} / {total_minutes}分（{display_percent:.1f}%）",
                 "",
                 str(task["daily_target_minutes"]),
+                str(task.get("schedule_note", "")),
             ]
 
             for column_index, value in enumerate(values):
@@ -1169,7 +1185,7 @@ class DayView(QWidget):
             progress_bar.setRange(0, 100)
             progress_bar.setValue(bar_percent)
             progress_bar.setFormat(f"{display_percent:.1f}%")
-            self.tasks_table.setCellWidget(row_index, 6, progress_bar)
+            self.tasks_table.setCellWidget(row_index, 7, progress_bar)
 
     def _set_allocations(self, allocations: list[dict]) -> None:
         rows = [
@@ -1365,20 +1381,31 @@ class DayView(QWidget):
     def _validate_a_task_input(
         self,
         title: str,
+        start_date: str,
         deadline_date: str,
         total_minutes_text: str,
     ) -> str | None:
         if not title:
             return "タイトルを入力してください。"
+        if not start_date:
+            return "開始日を入力してください。"
         if not deadline_date:
             return "締切日を入力してください。"
         if not total_minutes_text:
             return "必要時間を入力してください。"
 
         try:
-            date.fromisoformat(deadline_date)
+            parsed_start = date.fromisoformat(start_date)
+        except ValueError:
+            return "開始日はYYYY-MM-DD形式で入力してください。"
+
+        try:
+            parsed_deadline = date.fromisoformat(deadline_date)
         except ValueError:
             return "締切日はYYYY-MM-DD形式で入力してください。"
+
+        if parsed_start > parsed_deadline:
+            return "開始日は締切日以前にしてください。"
 
         try:
             total_minutes = int(total_minutes_text)
@@ -1557,6 +1584,10 @@ class DayView(QWidget):
 
     def _sync_target_date_inputs(self, old_target_date: str | None = None) -> None:
         self.log_date_input.setText(self.target_date)
+
+        task_start = self.task_start_input.text().strip()
+        if not task_start or task_start == old_target_date:
+            self.task_start_input.setText(self.target_date)
 
         task_deadline = self.task_deadline_input.text().strip()
         if not task_deadline or task_deadline == old_target_date:

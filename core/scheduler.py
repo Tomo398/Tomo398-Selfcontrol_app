@@ -46,6 +46,7 @@ def compute_daily_target_minutes(
     remaining_minutes: int,
     deadline_date: str,
     today: str | None = None,
+    start_date: str | None = None,
 ) -> int:
     """
     MVP版: daily_target = ceil(remaining / remaining_workdays_inclusive)
@@ -56,8 +57,11 @@ def compute_daily_target_minutes(
 
     d_deadline = parse_date(deadline_date)
     d_today = parse_date(today) if today else date.today()
+    d_start = parse_date(start_date) if start_date else None
 
     if not is_a_allocation_workday(d_today):
+        return 0
+    if d_start is not None and d_today < d_start:
         return 0
 
     remaining_workdays = a_allocation_workdays_inclusive(d_today, d_deadline)
@@ -94,6 +98,7 @@ def compute_daily_target_rounded_minutes(
     remaining_minutes: int,
     deadline_date: str,
     today: str | None = None,
+    start_date: str | None = None,
     granularity: int = DEFAULT_GRANULARITY_MINUTES,
 ) -> int:
     """
@@ -103,6 +108,7 @@ def compute_daily_target_rounded_minutes(
         remaining_minutes=remaining_minutes,
         deadline_date=deadline_date,
         today=today,
+        start_date=start_date,
     )
     return round_up_to_granularity(raw, granularity)
 
@@ -124,8 +130,10 @@ def attach_daily_targets_to_tasks(
             remaining_minutes=int(task["remaining_minutes"]),
             deadline_date=str(task["deadline_date"]),
             today=today,
+            start_date=task.get("start_date"),
             granularity=granularity,
         )
+        task_with_target["schedule_note"] = task_schedule_note(task, today)
         result.append(task_with_target)
 
     return result
@@ -288,6 +296,30 @@ def total_allocation_minutes(allocations: list[dict]) -> int:
     return sum(int(allocation.get("minutes", 0)) for allocation in allocations)
 
 
+def is_task_in_a_allocation_period(task: dict, today: str) -> bool:
+    d_today = parse_date(today)
+    d_deadline = parse_date(str(task["deadline_date"]))
+    start_date = task.get("start_date")
+    d_start = parse_date(str(start_date)) if start_date else None
+
+    if d_start is not None and d_today < d_start:
+        return False
+    return d_today <= d_deadline
+
+
+def task_schedule_note(task: dict, today: str | None) -> str:
+    if today is None:
+        return ""
+
+    start_date = task.get("start_date")
+    if not start_date:
+        return ""
+
+    if parse_date(today) < parse_date(str(start_date)):
+        return "開始日前"
+    return ""
+
+
 def build_capacity_summary(
     free_blocks: list[TimeBlock],
     duration_only_events: list[dict],
@@ -429,10 +461,14 @@ def allocate_tasks_to_free_blocks(
     )
 
     for task in sorted_tasks:
+        if not is_task_in_a_allocation_period(task, today):
+            continue
+
         target_minutes = compute_daily_target_rounded_minutes(
             remaining_minutes=int(task["remaining_minutes"]),
             deadline_date=str(task["deadline_date"]),
             today=today,
+            start_date=task.get("start_date"),
             granularity=granularity,
         )
 

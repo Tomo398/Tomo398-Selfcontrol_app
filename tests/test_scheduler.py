@@ -71,6 +71,53 @@ def test_compute_daily_target_minutes_counts_workdays_excluding_sunday() -> None
     )
 
 
+def test_compute_daily_target_minutes_returns_zero_before_start_date() -> None:
+    assert (
+        compute_daily_target_minutes(
+            remaining_minutes=300,
+            start_date="2026-04-22",
+            deadline_date="2026-04-25",
+            today="2026-04-20",
+        )
+        == 0
+    )
+    assert (
+        attach_daily_targets_to_tasks(
+            [
+                {
+                    "id": 1,
+                    "title": "Future",
+                    "start_date": "2026-04-22",
+                    "deadline_date": "2026-04-25",
+                    "remaining_minutes": 300,
+                }
+            ],
+            today="2026-04-20",
+        )[0]
+        == {
+            "id": 1,
+            "title": "Future",
+            "start_date": "2026-04-22",
+            "deadline_date": "2026-04-25",
+            "remaining_minutes": 300,
+            "daily_target_minutes": 0,
+            "schedule_note": "開始日前",
+        }
+    )
+
+
+def test_compute_daily_target_minutes_uses_today_after_start_date() -> None:
+    assert (
+        compute_daily_target_minutes(
+            remaining_minutes=300,
+            start_date="2026-04-20",
+            deadline_date="2026-04-25",
+            today="2026-04-22",
+        )
+        == 75
+    )
+
+
 def test_build_busy_blocks_sorts_events_and_skips_invalid_ranges() -> None:
     events = [
         {
@@ -235,4 +282,40 @@ def test_allocate_tasks_to_free_blocks_returns_empty_on_sunday() -> None:
         tasks=tasks,
         free_blocks=free_blocks,
         today="2026-04-19",
+    ) == []
+
+
+def test_allocate_tasks_to_free_blocks_skips_tasks_before_start_date() -> None:
+    tasks = [
+        {
+            "id": 1,
+            "title": "Future",
+            "start_date": "2026-04-22",
+            "deadline_date": "2026-04-25",
+            "remaining_minutes": 300,
+        },
+    ]
+
+    assert allocate_tasks_to_free_blocks(
+        tasks=tasks,
+        free_blocks=[(dt(8), dt(10))],
+        today="2026-04-20",
+    ) == []
+
+
+def test_allocate_tasks_to_free_blocks_skips_expired_tasks() -> None:
+    tasks = [
+        {
+            "id": 1,
+            "title": "Expired",
+            "start_date": "2026-04-18",
+            "deadline_date": "2026-04-19",
+            "remaining_minutes": 300,
+        },
+    ]
+
+    assert allocate_tasks_to_free_blocks(
+        tasks=tasks,
+        free_blocks=[(dt(8), dt(10))],
+        today="2026-04-20",
     ) == []

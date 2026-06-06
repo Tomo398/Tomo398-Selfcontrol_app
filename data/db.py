@@ -30,9 +30,11 @@ def init_db(
     conn = connect(db_path)
     try:
         _ensure_a_tasks_status_column(conn)
+        _ensure_a_tasks_start_date_column(conn)
         sql = schema_path.read_text(encoding="utf-8")
         conn.executescript(sql)
         _ensure_a_tasks_status_column(conn)
+        _ensure_a_tasks_start_date_column(conn)
         _ensure_a_task_candidates_table(conn)
         _ensure_settings_table(conn)
         conn.commit()
@@ -45,18 +47,32 @@ def insert_a_task(
     deadline_date: str,   # "YYYY-MM-DD"
     total_minutes: int,
     db_path: Path = DEFAULT_DB_PATH,
+    start_date: str | None = None,   # "YYYY-MM-DD"
 ) -> int:
     if total_minutes < 0:
         raise ValueError("total_minutes must be >= 0")
+    normalized_start_date, normalized_deadline_date = _normalize_a_task_date_range(
+        start_date=start_date,
+        deadline_date=deadline_date,
+    )
 
     conn = connect(db_path)
     try:
+        _ensure_a_tasks_start_date_column(conn)
         cur = conn.execute(
             """
-            INSERT INTO a_tasks (title, deadline_date, total_minutes, remaining_minutes)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO a_tasks (
+              title, start_date, deadline_date, total_minutes, remaining_minutes
+            )
+            VALUES (?, ?, ?, ?, ?)
             """,
-            (title, deadline_date, total_minutes, total_minutes),
+            (
+                title,
+                normalized_start_date,
+                normalized_deadline_date,
+                total_minutes,
+                total_minutes,
+            ),
         )
         conn.commit()
         return int(cur.lastrowid)
@@ -68,10 +84,11 @@ def list_a_tasks(db_path: Path = DEFAULT_DB_PATH) -> list[dict]:
     conn = connect(db_path)
     try:
         _ensure_a_tasks_status_column(conn)
+        _ensure_a_tasks_start_date_column(conn)
         rows = conn.execute(
             """
             SELECT
-              id, title, deadline_date, total_minutes,
+              id, title, start_date, deadline_date, total_minutes,
               remaining_minutes, status, created_at
             FROM a_tasks
             WHERE status = 'active'
@@ -92,10 +109,11 @@ def list_expired_active_a_tasks(
     conn = connect(db_path)
     try:
         _ensure_a_tasks_status_column(conn)
+        _ensure_a_tasks_start_date_column(conn)
         rows = conn.execute(
             """
             SELECT
-              id, title, deadline_date, total_minutes,
+              id, title, start_date, deadline_date, total_minutes,
               remaining_minutes, status, created_at
             FROM a_tasks
             WHERE status = 'active'
@@ -578,6 +596,45 @@ def _ensure_a_tasks_status_column(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+def _ensure_a_tasks_start_date_column(conn: sqlite3.Connection) -> None:
+    table = conn.execute(
+        """
+        SELECT name
+        FROM sqlite_master
+        WHERE type = 'table' AND name = 'a_tasks'
+        """
+    ).fetchone()
+    if table is None:
+        return
+
+    columns = {
+        str(row["name"])
+        for row in conn.execute("PRAGMA table_info(a_tasks)").fetchall()
+    }
+    if "start_date" not in columns:
+        conn.execute(
+            "ALTER TABLE a_tasks ADD COLUMN start_date TEXT NOT NULL DEFAULT ''"
+        )
+
+    if "created_at" in columns:
+        conn.execute(
+            """
+            UPDATE a_tasks
+            SET start_date = COALESCE(NULLIF(substr(created_at, 1, 10), ''), deadline_date)
+            WHERE start_date = ''
+            """
+        )
+    else:
+        conn.execute(
+            """
+            UPDATE a_tasks
+            SET start_date = deadline_date
+            WHERE start_date = ''
+            """
+        )
+    conn.commit()
+
+
 def _ensure_settings_table(conn: sqlite3.Connection) -> None:
     conn.execute(
         """
@@ -610,6 +667,17 @@ def _ensure_a_task_candidates_table(conn: sqlite3.Connection) -> None:
         """
     )
     conn.commit()
+
+
+def _normalize_a_task_date_range(
+    start_date: str | None,
+    deadline_date: str,
+) -> tuple[str, str]:
+    deadline = date.fromisoformat(deadline_date)
+    start = date.fromisoformat(start_date) if start_date else date.today()
+    if start > deadline:
+        raise ValueError("start_date must be on or before deadline_date")
+    return start.isoformat(), deadline.isoformat()
 
 
 def _parse_hhmm(value: str | None) -> time | None:

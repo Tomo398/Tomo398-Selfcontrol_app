@@ -44,6 +44,7 @@ CREATE TABLE IF NOT EXISTS routine_events (
 CREATE TABLE IF NOT EXISTS a_tasks (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   title TEXT NOT NULL,
+  start_date TEXT NOT NULL, -- YYYY-MM-DD
   deadline_date TEXT NOT NULL, -- YYYY-MM-DD
   total_minutes INTEGER NOT NULL CHECK(total_minutes >= 0),
   remaining_minutes INTEGER NOT NULL CHECK(remaining_minutes >= 0),
