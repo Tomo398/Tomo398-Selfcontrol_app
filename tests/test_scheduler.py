@@ -3,9 +3,11 @@ from datetime import datetime
 from core.scheduler import (
     allocate_task_to_free_blocks,
     allocate_tasks_to_free_blocks,
+    attach_daily_targets_to_tasks,
     build_busy_blocks,
     build_capacity_summary,
     build_free_blocks,
+    compute_daily_target_minutes,
     compute_daily_target_rounded_minutes,
 )
 
@@ -22,6 +24,50 @@ def test_compute_daily_target_rounded_minutes_rounds_up_to_granularity() -> None
             today="2026-04-20",
         )
         == 15
+    )
+
+
+def test_compute_daily_target_minutes_returns_zero_on_sunday() -> None:
+    assert (
+        compute_daily_target_minutes(
+            remaining_minutes=300,
+            deadline_date="2026-04-21",
+            today="2026-04-19",
+        )
+        == 0
+    )
+    assert (
+        attach_daily_targets_to_tasks(
+            [
+                {
+                    "id": 1,
+                    "title": "Report",
+                    "deadline_date": "2026-04-21",
+                    "remaining_minutes": 300,
+                }
+            ],
+            today="2026-04-19",
+        )[0]["daily_target_minutes"]
+        == 0
+    )
+
+
+def test_compute_daily_target_minutes_counts_workdays_excluding_sunday() -> None:
+    assert (
+        compute_daily_target_minutes(
+            remaining_minutes=600,
+            deadline_date="2026-04-26",
+            today="2026-04-20",
+        )
+        == 100
+    )
+    assert (
+        compute_daily_target_minutes(
+            remaining_minutes=120,
+            deadline_date="2026-04-26",
+            today="2026-04-25",
+        )
+        == 120
     )
 
 
@@ -167,3 +213,26 @@ def test_allocate_tasks_to_free_blocks_allocates_by_deadline_order() -> None:
             "minutes": 60,
         },
     ]
+
+
+def test_allocate_tasks_to_free_blocks_returns_empty_on_sunday() -> None:
+    tasks = [
+        {
+            "id": 1,
+            "title": "Report",
+            "deadline_date": "2026-04-21",
+            "remaining_minutes": 300,
+        },
+    ]
+    free_blocks = [
+        (
+            datetime(2026, 4, 19, 8),
+            datetime(2026, 4, 19, 12),
+        ),
+    ]
+
+    assert allocate_tasks_to_free_blocks(
+        tasks=tasks,
+        free_blocks=free_blocks,
+        today="2026-04-19",
+    ) == []

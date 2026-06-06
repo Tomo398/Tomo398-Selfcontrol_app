@@ -5,11 +5,18 @@ from datetime import date, datetime, time, timedelta
 TimeBlock = tuple[datetime, datetime]
 
 DEFAULT_GRANULARITY_MINUTES = 15
+SUNDAY_WEEKDAY = 6
+A_ALLOCATION_EXCLUDED_MESSAGE = "日曜日はA割当対象外です"
 
 
 def parse_date(d: str) -> date:
     # DBでは日付を "YYYY-MM-DD" 形式の文字列で持つ。
     return date.fromisoformat(d)
+
+
+def is_a_allocation_workday(target_date: date | str) -> bool:
+    d = parse_date(target_date) if isinstance(target_date, str) else target_date
+    return d.weekday() != SUNDAY_WEEKDAY
 
 
 def days_inclusive(today: date, deadline: date) -> int:
@@ -20,13 +27,29 @@ def days_inclusive(today: date, deadline: date) -> int:
     return (deadline - today).days + 1
 
 
+def a_allocation_workdays_inclusive(today: date, deadline: date) -> int:
+    """
+    Aタスクの自動割当対象日（月〜土）を、今日から締切日まで含めて数える。
+    """
+    total_days = days_inclusive(today, deadline)
+    if total_days <= 0:
+        return 0
+
+    return sum(
+        1
+        for offset in range(total_days)
+        if is_a_allocation_workday(today + timedelta(days=offset))
+    )
+
+
 def compute_daily_target_minutes(
     remaining_minutes: int,
     deadline_date: str,
     today: str | None = None,
 ) -> int:
     """
-    MVP版: daily_target = ceil(remaining / remaining_days_inclusive)
+    MVP版: daily_target = ceil(remaining / remaining_workdays_inclusive)
+    日曜日はAタスクの自動割当対象外なので0分にする。
     """
     if remaining_minutes < 0:
         raise ValueError("remaining_minutes must be >= 0")
@@ -34,13 +57,16 @@ def compute_daily_target_minutes(
     d_deadline = parse_date(deadline_date)
     d_today = parse_date(today) if today else date.today()
 
-    remaining_days = days_inclusive(d_today, d_deadline)
-    if remaining_days <= 0:
+    if not is_a_allocation_workday(d_today):
+        return 0
+
+    remaining_workdays = a_allocation_workdays_inclusive(d_today, d_deadline)
+    if remaining_workdays <= 0:
         # 期限切れ：今日に全部寄せる（MVPの割り切り）
         return remaining_minutes
 
     # ceil(a/b) = (a + b - 1) // b
-    return (remaining_minutes + remaining_days - 1) // remaining_days
+    return (remaining_minutes + remaining_workdays - 1) // remaining_workdays
 
 def round_up_to_granularity(
     minutes: int,
@@ -267,6 +293,7 @@ def build_capacity_summary(
     duration_only_events: list[dict],
     tasks_with_targets: list[dict],
     allocations: list[dict] | None = None,
+    today: str | None = None,
 ) -> dict:
     """
     fixed_time予定を引いた空き時間から、時間未指定Cを固定コストとして差し引く。
@@ -289,6 +316,13 @@ def build_capacity_summary(
 
     if allocations is not None:
         summary["allocated_a_minutes"] = total_allocation_minutes(allocations)
+
+    if today is not None:
+        is_allocation_day = is_a_allocation_workday(today)
+        summary["is_a_allocation_day"] = is_allocation_day
+        summary["a_allocation_excluded_message"] = (
+            "" if is_allocation_day else A_ALLOCATION_EXCLUDED_MESSAGE
+        )
 
     return summary
 
@@ -383,6 +417,9 @@ def allocate_tasks_to_free_blocks(
     複数Aタスクを締切が近い順にfree_blocksへ割り当てる。
     MVPでは最適化しない。前から順に詰めるだけ。
     """
+    if not is_a_allocation_workday(today):
+        return []
+
     allocations = []
     current_free_blocks = free_blocks[:]
 
