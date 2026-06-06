@@ -10,6 +10,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_DB_PATH = PROJECT_ROOT / "data" / "app.db"
 DEFAULT_SCHEMA_PATH = PROJECT_ROOT / "data" / "schema.sql"
 A_TASK_STATUSES = {"active", "completed", "incomplete"}
+A_TASK_SCALE_LABELS = {"weekly", "monthly", "yearly", "other"}
 
 
 def connect(db_path: Path = DEFAULT_DB_PATH) -> sqlite3.Connection:
@@ -31,10 +32,12 @@ def init_db(
     try:
         _ensure_a_tasks_status_column(conn)
         _ensure_a_tasks_start_date_column(conn)
+        _ensure_a_tasks_scale_label_column(conn)
         sql = schema_path.read_text(encoding="utf-8")
         conn.executescript(sql)
         _ensure_a_tasks_status_column(conn)
         _ensure_a_tasks_start_date_column(conn)
+        _ensure_a_tasks_scale_label_column(conn)
         _ensure_a_task_candidates_table(conn)
         _ensure_settings_table(conn)
         conn.commit()
@@ -48,6 +51,7 @@ def insert_a_task(
     total_minutes: int,
     db_path: Path = DEFAULT_DB_PATH,
     start_date: str | None = None,   # "YYYY-MM-DD"
+    task_scale_label: str = "other",
 ) -> int:
     if total_minutes < 0:
         raise ValueError("total_minutes must be >= 0")
@@ -55,16 +59,19 @@ def insert_a_task(
         start_date=start_date,
         deadline_date=deadline_date,
     )
+    task_scale_label = _normalize_task_scale_label(task_scale_label)
 
     conn = connect(db_path)
     try:
         _ensure_a_tasks_start_date_column(conn)
+        _ensure_a_tasks_scale_label_column(conn)
         cur = conn.execute(
             """
             INSERT INTO a_tasks (
-              title, start_date, deadline_date, total_minutes, remaining_minutes
+              title, start_date, deadline_date, total_minutes,
+              remaining_minutes, task_scale_label
             )
-            VALUES (?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?)
             """,
             (
                 title,
@@ -72,6 +79,7 @@ def insert_a_task(
                 normalized_deadline_date,
                 total_minutes,
                 total_minutes,
+                task_scale_label,
             ),
         )
         conn.commit()
@@ -85,11 +93,12 @@ def list_a_tasks(db_path: Path = DEFAULT_DB_PATH) -> list[dict]:
     try:
         _ensure_a_tasks_status_column(conn)
         _ensure_a_tasks_start_date_column(conn)
+        _ensure_a_tasks_scale_label_column(conn)
         rows = conn.execute(
             """
             SELECT
               id, title, start_date, deadline_date, total_minutes,
-              remaining_minutes, status, created_at
+              remaining_minutes, task_scale_label, status, created_at
             FROM a_tasks
             WHERE status = 'active'
             ORDER BY deadline_date ASC, id ASC
@@ -110,11 +119,12 @@ def list_expired_active_a_tasks(
     try:
         _ensure_a_tasks_status_column(conn)
         _ensure_a_tasks_start_date_column(conn)
+        _ensure_a_tasks_scale_label_column(conn)
         rows = conn.execute(
             """
             SELECT
               id, title, start_date, deadline_date, total_minutes,
-              remaining_minutes, status, created_at
+              remaining_minutes, task_scale_label, status, created_at
             FROM a_tasks
             WHERE status = 'active'
               AND deadline_date < ?
@@ -243,6 +253,27 @@ def update_a_task_status(
         cur = conn.execute(
             "UPDATE a_tasks SET status = ? WHERE id = ?",
             (status, a_task_id),
+        )
+        if cur.rowcount == 0:
+            raise ValueError(f"a_task_id not found: {a_task_id}")
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def update_a_task_scale_label(
+    a_task_id: int,
+    task_scale_label: str,
+    db_path: Path = DEFAULT_DB_PATH,
+) -> None:
+    task_scale_label = _normalize_task_scale_label(task_scale_label)
+
+    conn = connect(db_path)
+    try:
+        _ensure_a_tasks_scale_label_column(conn)
+        cur = conn.execute(
+            "UPDATE a_tasks SET task_scale_label = ? WHERE id = ?",
+            (task_scale_label, a_task_id),
         )
         if cur.rowcount == 0:
             raise ValueError(f"a_task_id not found: {a_task_id}")
@@ -635,6 +666,39 @@ def _ensure_a_tasks_start_date_column(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+def _ensure_a_tasks_scale_label_column(conn: sqlite3.Connection) -> None:
+    table = conn.execute(
+        """
+        SELECT name
+        FROM sqlite_master
+        WHERE type = 'table' AND name = 'a_tasks'
+        """
+    ).fetchone()
+    if table is None:
+        return
+
+    columns = {
+        str(row["name"])
+        for row in conn.execute("PRAGMA table_info(a_tasks)").fetchall()
+    }
+    if "task_scale_label" not in columns:
+        conn.execute(
+            """
+            ALTER TABLE a_tasks
+            ADD COLUMN task_scale_label TEXT NOT NULL DEFAULT 'other'
+            """
+        )
+
+    conn.execute(
+        """
+        UPDATE a_tasks
+        SET task_scale_label = 'other'
+        WHERE task_scale_label NOT IN ('weekly', 'monthly', 'yearly', 'other')
+        """
+    )
+    conn.commit()
+
+
 def _ensure_settings_table(conn: sqlite3.Connection) -> None:
     conn.execute(
         """
@@ -678,6 +742,13 @@ def _normalize_a_task_date_range(
     if start > deadline:
         raise ValueError("start_date must be on or before deadline_date")
     return start.isoformat(), deadline.isoformat()
+
+
+def _normalize_task_scale_label(task_scale_label: str) -> str:
+    label = task_scale_label.strip()
+    if label not in A_TASK_SCALE_LABELS:
+        raise ValueError("task_scale_label must be weekly, monthly, yearly, or other")
+    return label
 
 
 def _parse_hhmm(value: str | None) -> time | None:

@@ -48,6 +48,8 @@ CREATE TABLE IF NOT EXISTS a_tasks (
   deadline_date TEXT NOT NULL, -- YYYY-MM-DD
   total_minutes INTEGER NOT NULL CHECK(total_minutes >= 0),
   remaining_minutes INTEGER NOT NULL CHECK(remaining_minutes >= 0),
+  task_scale_label TEXT NOT NULL DEFAULT 'other'
+    CHECK(task_scale_label IN ('weekly', 'monthly', 'yearly', 'other')),
   status TEXT NOT NULL DEFAULT 'active'
     CHECK(status IN ('active', 'completed', 'incomplete')),
   created_at TEXT NOT NULL DEFAULT (datetime('now'))

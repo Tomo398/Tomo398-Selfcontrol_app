@@ -61,6 +61,12 @@ MORNING_CHECK_TIME_KEY = "morning_check_time"
 NIGHT_LOG_TIME_KEY = "night_log_time"
 DEFAULT_MORNING_CHECK_TIME = "08:00"
 DEFAULT_NIGHT_LOG_TIME = "23:00"
+TASK_SCALE_LABELS = {
+    "weekly": "週単位",
+    "monthly": "月単位",
+    "yearly": "年単位",
+    "other": "その他",
+}
 
 
 class DayView(QWidget):
@@ -92,6 +98,7 @@ class DayView(QWidget):
         self.task_start_input = QLineEdit()
         self.task_deadline_input = QLineEdit()
         self.task_minutes_input = QLineEdit()
+        self.task_scale_label_input = QComboBox()
         self.add_task_button = QPushButton("Aタスク追加")
         self.task_total_update_input = QLineEdit()
         self.update_task_total_button = QPushButton("A想定時間更新")
@@ -152,6 +159,7 @@ class DayView(QWidget):
             [
                 "ID",
                 "タイトル",
+                "タスク分類",
                 "開始",
                 "締切",
                 "総時間(分)",
@@ -411,6 +419,9 @@ class DayView(QWidget):
 
         self.task_title_input.setText(title)
         self.task_start_input.setText(self.target_date)
+        other_index = self.task_scale_label_input.findData("other")
+        if other_index >= 0:
+            self.task_scale_label_input.setCurrentIndex(other_index)
         self.copied_candidate_id = candidate_id
         self.status_label.setText(
             "候補タイトルをAタスク追加フォームへコピーしました。締切日と必要時間を入力してください。"
@@ -421,6 +432,7 @@ class DayView(QWidget):
         start_date = self.task_start_input.text().strip()
         deadline_date = self.task_deadline_input.text().strip()
         total_minutes_text = self.task_minutes_input.text().strip()
+        task_scale_label = str(self.task_scale_label_input.currentData())
 
         error = self._validate_a_task_input(
             title,
@@ -439,6 +451,7 @@ class DayView(QWidget):
                 start_date=start_date,
                 deadline_date=deadline_date,
                 total_minutes=total_minutes,
+                task_scale_label=task_scale_label,
             )
         except Exception as exc:
             self.status_label.setText(f"Aタスクの保存に失敗しました: {exc}")
@@ -457,6 +470,9 @@ class DayView(QWidget):
         self.task_start_input.setText(self.target_date)
         self.task_deadline_input.setText(self.target_date)
         self.task_minutes_input.clear()
+        self.task_scale_label_input.setCurrentIndex(
+            max(self.task_scale_label_input.findData("other"), 0)
+        )
         self.refresh()
         self.status_label.setText(status_message)
 
@@ -798,8 +814,17 @@ class DayView(QWidget):
         self.task_start_input.setPlaceholderText("YYYY-MM-DD")
         self.task_deadline_input.setPlaceholderText("YYYY-MM-DD")
         self.task_minutes_input.setPlaceholderText("例: 120")
+        if self.task_scale_label_input.count() == 0:
+            self.task_scale_label_input.addItem("週単位タスク", "weekly")
+            self.task_scale_label_input.addItem("月単位タスク", "monthly")
+            self.task_scale_label_input.addItem("年単位タスク", "yearly")
+            self.task_scale_label_input.addItem("その他", "other")
+            self.task_scale_label_input.setCurrentIndex(
+                self.task_scale_label_input.findData("other")
+            )
 
         form.addRow("タイトル", self.task_title_input)
+        form.addRow("タスク分類", self.task_scale_label_input)
         form.addRow("開始日 YYYY-MM-DD", self.task_start_input)
         form.addRow("締切日", self.task_deadline_input)
         form.addRow("必要時間(分)", self.task_minutes_input)
@@ -1164,6 +1189,7 @@ class DayView(QWidget):
             values = [
                 str(task["id"]),
                 str(task["title"]),
+                _task_scale_label(task),
                 str(task.get("start_date", "")),
                 str(task["deadline_date"]),
                 str(total_minutes),
@@ -1185,7 +1211,7 @@ class DayView(QWidget):
             progress_bar.setRange(0, 100)
             progress_bar.setValue(bar_percent)
             progress_bar.setFormat(f"{display_percent:.1f}%")
-            self.tasks_table.setCellWidget(row_index, 7, progress_bar)
+            self.tasks_table.setCellWidget(row_index, 8, progress_bar)
 
     def _set_allocations(self, allocations: list[dict]) -> None:
         rows = [
@@ -1713,6 +1739,11 @@ def _task_progress_values(task: dict) -> tuple[int, int, float, int]:
     display_percent = int(progress * 10 + 0.5) / 10
     bar_percent = int(progress)
     return (completed_minutes, total_minutes, display_percent, bar_percent)
+
+
+def _task_scale_label(task: dict) -> str:
+    label = str(task.get("task_scale_label", "other"))
+    return TASK_SCALE_LABELS.get(label, TASK_SCALE_LABELS["other"])
 
 
 def _tasks_available_on_date(tasks: list[dict], target_date: str) -> list[dict]:

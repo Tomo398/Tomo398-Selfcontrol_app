@@ -9,6 +9,7 @@ from data.db import (
     list_a_tasks,
     list_expired_active_a_tasks,
     update_a_task_total_minutes,
+    update_a_task_scale_label,
     update_a_task_status,
     upsert_daily_log,
 )
@@ -36,6 +37,7 @@ def test_update_a_task_total_minutes_recomputes_remaining_when_total_increases(t
     [task] = list_a_tasks(db_path=db_path)
     assert task["total_minutes"] == 1800
     assert task["remaining_minutes"] == 1680
+    assert task["task_scale_label"] == "other"
 
 
 def test_insert_a_task_saves_start_date(tmp_path) -> None:
@@ -68,6 +70,57 @@ def test_insert_a_task_rejects_start_date_after_deadline(tmp_path) -> None:
             total_minutes=300,
             db_path=db_path,
         )
+
+
+@pytest.mark.parametrize("task_scale_label", ["weekly", "monthly", "yearly", "other"])
+def test_insert_a_task_saves_task_scale_label(tmp_path, task_scale_label) -> None:
+    db_path = tmp_path / "app.db"
+    init_db(db_path=db_path)
+
+    task_id = insert_a_task(
+        title="Scale label task",
+        start_date="2026-05-01",
+        deadline_date="2026-05-10",
+        total_minutes=300,
+        task_scale_label=task_scale_label,
+        db_path=db_path,
+    )
+
+    [task] = list_a_tasks(db_path=db_path)
+    assert task["id"] == task_id
+    assert task["task_scale_label"] == task_scale_label
+
+
+def test_insert_a_task_rejects_invalid_task_scale_label(tmp_path) -> None:
+    db_path = tmp_path / "app.db"
+    init_db(db_path=db_path)
+
+    with pytest.raises(ValueError):
+        insert_a_task(
+            title="Bad scale label",
+            start_date="2026-05-01",
+            deadline_date="2026-05-10",
+            total_minutes=300,
+            task_scale_label="daily",
+            db_path=db_path,
+        )
+
+
+def test_update_a_task_scale_label_updates_existing_task(tmp_path) -> None:
+    db_path = tmp_path / "app.db"
+    init_db(db_path=db_path)
+    task_id = insert_a_task(
+        title="Scale label task",
+        start_date="2026-05-01",
+        deadline_date="2026-05-10",
+        total_minutes=300,
+        db_path=db_path,
+    )
+
+    update_a_task_scale_label(task_id, "yearly", db_path=db_path)
+
+    [task] = list_a_tasks(db_path=db_path)
+    assert task["task_scale_label"] == "yearly"
 
 
 def test_update_a_task_total_minutes_clamps_remaining_to_zero(tmp_path) -> None:
@@ -233,3 +286,4 @@ def test_init_db_adds_status_column_to_existing_a_tasks_table(tmp_path) -> None:
     [task] = list_a_tasks(db_path=db_path)
     assert task["status"] == "active"
     assert task["start_date"] == task["created_at"][:10]
+    assert task["task_scale_label"] == "other"
