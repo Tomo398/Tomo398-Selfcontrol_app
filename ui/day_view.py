@@ -1216,6 +1216,14 @@ class DayView(QWidget):
             for routine in list_routine_events_for_date(target_date):
                 if routine.get("mode") != "fixed_time":
                     continue
+
+                weekdays = str(routine.get("weekdays", ""))
+
+                   # 予定確認タブでは、睡眠などの「毎日fixed_time C」は表示しない。
+                    # 表示対象は「単発B」と「毎週fixed_time C」のみにする。
+                if _routine_repeat_kind(weekdays) == "毎日":
+                    continue
+
                 entries.append(
                     {
                         "date": target_date,
@@ -1259,9 +1267,9 @@ class DayView(QWidget):
         self._set_rows(self.schedule_overview_table, rows)
         self.schedule_overview_summary_label.setText(
             f"{start_date}から{period_days}日分 / "
-            f"B予定・fixed_time C: {len(entries)}件 / "
-            "duration_only Cは時刻がないため予定一覧対象外です。"
-        )
+            f"B予定・毎週fixed_time C: {len(entries)}件 / "
+            "毎日C・時間未指定Cは予定一覧対象外です。"
+            )
 
     def _set_schedule_overview_error(self, message: str) -> None:
         self.schedule_overview_table.setRowCount(0)
