@@ -40,6 +40,7 @@ def test_list_routine_events_for_date_expands_matching_weekday(tmp_path) -> None
             "title": "Sleep",
             "start_dt": "2026-04-20T07:00:00",
             "end_dt": "2026-04-20T08:00:00",
+            "weekdays": "0",
             "remind_start": 1,
             "remind_end": 0,
             "note": "morning",
@@ -51,6 +52,7 @@ def test_list_routine_events_for_date_expands_matching_weekday(tmp_path) -> None
             "mode": "duration_only",
             "title": "Housework",
             "duration_minutes": 45,
+            "weekdays": "0",
             "note": "anytime",
         },
     ]

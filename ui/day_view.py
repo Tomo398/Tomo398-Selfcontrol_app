@@ -152,8 +152,18 @@ class DayView(QWidget):
         self.missing_logs_summary_label = QLabel()
         self.missing_logs_summary_label.setWordWrap(True)
         self.duration_only_summary_label = QLabel()
+        self.schedule_start_input = QLineEdit(self.target_date)
+        self.schedule_period_input = QComboBox()
+        self.update_schedule_button = QPushButton("更新")
+        self.schedule_overview_summary_label = QLabel(
+            "duration_only Cは時刻がないため予定一覧対象外です。"
+        )
+        self.schedule_overview_summary_label.setWordWrap(True)
 
         self.events_table = self._create_table(["ID", "種別", "タイトル", "開始", "終了", "メモ"])
+        self.schedule_overview_table = self._create_table(
+            ["日付", "開始", "終了", "種別", "タイトル", "繰り返し種別", "メモ"]
+        )
         self.expired_tasks_table = self._create_table(
             ["タスク名", "締切", "総時間", "残り時間", "進捗"]
         )
@@ -197,6 +207,7 @@ class DayView(QWidget):
         self.update_task_total_button.clicked.connect(self.update_selected_task_total)
         self.add_event_button.clicked.connect(self.add_b_event)
         self.add_routine_button.clicked.connect(self.add_routine_event)
+        self.update_schedule_button.clicked.connect(self.refresh_schedule_overview)
         self.routine_mode_input.currentTextChanged.connect(self._update_routine_mode_inputs)
         self.routine_everyday_input.toggled.connect(self._on_routine_everyday_toggled)
         self.routine_weekly_input.toggled.connect(self._on_routine_weekly_toggled)
@@ -233,6 +244,7 @@ class DayView(QWidget):
 
         tabs = QTabWidget()
         tabs.addTab(self._build_today_tab(), "今日の確認")
+        tabs.addTab(self._build_schedule_tab(), "予定確認")
         tabs.addTab(self._build_edit_tab(), "入力・編集")
         tabs.addTab(self._build_settings_tab(), "設定")
         root.addWidget(tabs)
@@ -274,6 +286,14 @@ class DayView(QWidget):
                 self._build_add_event_form(),
                 self._build_add_routine_form(),
                 self._build_daily_log_form(),
+            ]
+        )
+
+    def _build_schedule_tab(self) -> QWidget:
+        return self._build_scroll_tab(
+            [
+                self._build_schedule_controls(),
+                self._wrap_schedule_overview_table(),
             ]
         )
 
@@ -366,6 +386,7 @@ class DayView(QWidget):
         self._set_allocations(allocations)
         self._set_log_task_options(tasks)
         self._set_reminder_targets(scheduled_events, allocations)
+        self.refresh_schedule_overview(set_status=False)
         capacity_status = " / 過密警告" if capacity_summary["is_over_capacity"] else ""
         self.status_label.setText(
             f"B/C予定 {len(scheduled_events)}件 / 時間未指定C 合計 "
@@ -391,6 +412,47 @@ class DayView(QWidget):
             self._sync_target_date_inputs(old_target_date)
 
         return None
+
+    def refresh_schedule_overview(
+        self,
+        checked: bool = False,
+        *,
+        set_status: bool = True,
+    ) -> None:
+        del checked
+        start_text = self.schedule_start_input.text().strip()
+        if not start_text:
+            self._set_schedule_overview_error("予定確認の開始日を入力してください。")
+            if set_status:
+                self.status_label.setText("予定確認の開始日を入力してください。")
+            return
+
+        try:
+            start_date = date.fromisoformat(start_text)
+        except ValueError:
+            self._set_schedule_overview_error("開始日はYYYY-MM-DD形式で入力してください。")
+            if set_status:
+                self.status_label.setText("開始日はYYYY-MM-DD形式で入力してください。")
+            return
+
+        period_days = int(self.schedule_period_input.currentData() or 7)
+        if period_days not in (7, 14, 30):
+            period_days = 7
+
+        try:
+            entries = self._build_schedule_overview_entries(start_date, period_days)
+        except Exception as exc:
+            message = f"予定一覧の読み込みに失敗しました: {exc}"
+            self._set_schedule_overview_error(message)
+            if set_status:
+                self.status_label.setText(message)
+            return
+
+        self._set_schedule_overview(entries, start_text, period_days)
+        if set_status:
+            self.status_label.setText(
+                f"予定一覧を更新しました: {start_text}から{period_days}日分 / {len(entries)}件"
+            )
 
     def add_a_task_candidate(self) -> None:
         title = self.candidate_title_input.text().strip()
@@ -809,6 +871,31 @@ class DayView(QWidget):
         layout.addWidget(self.refresh_button)
         return group
 
+    def _build_schedule_controls(self) -> QGroupBox:
+        group = QGroupBox("表示条件")
+        layout = QHBoxLayout(group)
+
+        self.schedule_start_input.setPlaceholderText("YYYY-MM-DD")
+        if self.schedule_period_input.count() == 0:
+            self.schedule_period_input.addItem("7日", 7)
+            self.schedule_period_input.addItem("14日", 14)
+            self.schedule_period_input.addItem("30日", 30)
+
+        layout.addWidget(QLabel("開始日"))
+        layout.addWidget(self.schedule_start_input)
+        layout.addWidget(QLabel("表示期間"))
+        layout.addWidget(self.schedule_period_input)
+        layout.addWidget(self.update_schedule_button)
+        layout.addStretch(1)
+        return group
+
+    def _wrap_schedule_overview_table(self) -> QGroupBox:
+        group = QGroupBox("予定一覧")
+        layout = QVBoxLayout(group)
+        layout.addWidget(self.schedule_overview_summary_label)
+        layout.addWidget(self.schedule_overview_table)
+        return group
+
     def _build_add_candidate_form(self) -> QGroupBox:
         group = QGroupBox("Aタスク候補メモ追加")
         form = QFormLayout(group)
@@ -963,6 +1050,7 @@ class DayView(QWidget):
 
     def _set_table_minimum_heights(self) -> None:
         self.events_table.setMinimumHeight(150)
+        self.schedule_overview_table.setMinimumHeight(360)
         self.expired_tasks_table.setMinimumHeight(90)
         self.expired_tasks_table.setMaximumHeight(110)
         self.missing_logs_table.setMinimumHeight(90)
@@ -1072,6 +1160,7 @@ class DayView(QWidget):
         self.copy_candidate_to_task_button.setEnabled(False)
         for table in (
             self.events_table,
+            self.schedule_overview_table,
             self.expired_tasks_table,
             self.missing_logs_table,
             self.duration_only_table,
@@ -1099,6 +1188,84 @@ class DayView(QWidget):
             self.displayed_event_refs.append(_event_ref(event))
 
         self._set_rows(self.events_table, rows)
+
+    def _build_schedule_overview_entries(
+        self,
+        start_date: date,
+        period_days: int,
+    ) -> list[dict]:
+        entries = []
+        for offset in range(period_days):
+            target_date = (start_date + timedelta(days=offset)).isoformat()
+
+            for event in list_events_by_date(target_date):
+                if event["type"] != "B":
+                    continue
+                entries.append(
+                    {
+                        "date": target_date,
+                        "start": _format_datetime(str(event["start_dt"])),
+                        "end": _format_datetime(str(event["end_dt"])),
+                        "kind": "B",
+                        "title": str(event["title"]),
+                        "repeat": "単発",
+                        "note": str(event.get("note", "")),
+                    }
+                )
+
+            for routine in list_routine_events_for_date(target_date):
+                if routine.get("mode") != "fixed_time":
+                    continue
+                entries.append(
+                    {
+                        "date": target_date,
+                        "start": _format_datetime(str(routine["start_dt"])),
+                        "end": _format_datetime(str(routine["end_dt"])),
+                        "kind": "C",
+                        "title": str(routine["title"]),
+                        "repeat": _routine_repeat_kind(str(routine.get("weekdays", ""))),
+                        "note": str(routine.get("note", "")),
+                    }
+                )
+
+        return sorted(
+            entries,
+            key=lambda entry: (
+                str(entry["date"]),
+                str(entry["start"]),
+                str(entry["kind"]),
+                str(entry["title"]),
+            ),
+        )
+
+    def _set_schedule_overview(
+        self,
+        entries: list[dict],
+        start_date: str,
+        period_days: int,
+    ) -> None:
+        rows = [
+            [
+                str(entry["date"]),
+                str(entry["start"]),
+                str(entry["end"]),
+                str(entry["kind"]),
+                str(entry["title"]),
+                str(entry["repeat"]),
+                str(entry["note"]),
+            ]
+            for entry in entries
+        ]
+        self._set_rows(self.schedule_overview_table, rows)
+        self.schedule_overview_summary_label.setText(
+            f"{start_date}から{period_days}日分 / "
+            f"B予定・fixed_time C: {len(entries)}件 / "
+            "duration_only Cは時刻がないため予定一覧対象外です。"
+        )
+
+    def _set_schedule_overview_error(self, message: str) -> None:
+        self.schedule_overview_table.setRowCount(0)
+        self.schedule_overview_summary_label.setText(message)
 
     def _set_expired_tasks(self, tasks: list[dict]) -> None:
         self.displayed_expired_task_ids = []
@@ -1667,6 +1834,10 @@ class DayView(QWidget):
         if not task_deadline or task_deadline == old_target_date:
             self.task_deadline_input.setText(self.target_date)
 
+        schedule_start = self.schedule_start_input.text().strip()
+        if not schedule_start or schedule_start == old_target_date:
+            self.schedule_start_input.setText(self.target_date)
+
         self._sync_datetime_input_date(
             self.event_start_input,
             old_target_date,
@@ -1814,6 +1985,11 @@ def _format_weekday_label(weekday: int) -> str:
     if 0 <= weekday < len(WEEKDAY_LABELS):
         return WEEKDAY_LABELS[weekday]
     return str(weekday)
+
+
+def _routine_repeat_kind(weekdays: str) -> str:
+    parts = [part.strip() for part in weekdays.split(",") if part.strip()]
+    return "毎日" if ",".join(parts) == EVERYDAY_WEEKDAYS else "毎週"
 
 
 def _parse_routine_time(value: str) -> time | None:

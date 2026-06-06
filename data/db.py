@@ -532,6 +532,7 @@ def list_routine_events_for_date(
                     "title": routine["title"],
                     "start_dt": f'{target_date}T{routine["start_time"]}:00',
                     "end_dt": f'{target_date}T{routine["end_time"]}:00',
+                    "weekdays": routine["weekdays"],
                     "remind_start": routine["remind_start"],
                     "remind_end": routine["remind_end"],
                     "note": routine["note"],
@@ -547,6 +548,7 @@ def list_routine_events_for_date(
                 "mode": "duration_only",
                 "title": routine["title"],
                 "duration_minutes": int(routine["duration_minutes"]),
+                "weekdays": routine["weekdays"],
                 "note": routine["note"],
             }
         )
