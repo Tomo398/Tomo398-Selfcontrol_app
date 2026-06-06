@@ -57,6 +57,7 @@ from data.db import (
 
 
 EVERYDAY_WEEKDAYS = "0,1,2,3,4,5,6"
+WEEKDAY_LABELS = ["月", "火", "水", "木", "金", "土", "日"]
 MORNING_CHECK_TIME_KEY = "morning_check_time"
 NIGHT_LOG_TIME_KEY = "night_log_time"
 DEFAULT_MORNING_CHECK_TIME = "08:00"
@@ -115,7 +116,13 @@ class DayView(QWidget):
         self.routine_end_input = QLineEdit()
         self.routine_duration_input = QLineEdit()
         self.routine_everyday_input = QCheckBox("毎日繰り返す")
+        self.routine_weekly_input = QCheckBox("毎週繰り返す")
         self.routine_repeat_hint_label = QLabel()
+        self.routine_everyday_hint_label = QLabel("毎日このCルールを適用")
+        self.routine_weekly_hint_label = QLabel("選択した曜日に毎週適用")
+        self.routine_weekday_inputs = [
+            QCheckBox(weekday_label) for weekday_label in WEEKDAY_LABELS
+        ]
         self.routine_remind_start_input = QCheckBox()
         self.routine_remind_end_input = QCheckBox()
         self.routine_note_input = QLineEdit()
@@ -191,7 +198,12 @@ class DayView(QWidget):
         self.add_event_button.clicked.connect(self.add_b_event)
         self.add_routine_button.clicked.connect(self.add_routine_event)
         self.routine_mode_input.currentTextChanged.connect(self._update_routine_mode_inputs)
-        self.routine_everyday_input.toggled.connect(self._update_routine_repeat_hint)
+        self.routine_everyday_input.toggled.connect(self._on_routine_everyday_toggled)
+        self.routine_weekly_input.toggled.connect(self._on_routine_weekly_toggled)
+        for weekday_input in self.routine_weekday_inputs:
+            weekday_input.toggled.connect(
+                lambda _checked=False: self._update_routine_repeat_hint()
+            )
         self.save_log_button.clicked.connect(self.save_daily_log)
         self.delete_task_button.clicked.connect(self.delete_selected_task)
         self.delete_event_button.clicked.connect(self.delete_selected_event)
@@ -552,6 +564,11 @@ class DayView(QWidget):
             self.status_label.setText(error)
             return
 
+        repeat_error = self._validate_routine_repeat_setting()
+        if repeat_error:
+            self.status_label.setText(repeat_error)
+            return
+
         duration_minutes = (
             int(duration_minutes_text)
             if mode == "duration_only"
@@ -870,14 +887,42 @@ class DayView(QWidget):
         self.routine_duration_input.setPlaceholderText("例: 45")
         self.routine_note_input.setPlaceholderText("例: 毎日")
         self.routine_everyday_input.setChecked(True)
+        self.routine_weekly_input.setChecked(False)
+        self._clear_routine_weekday_inputs()
+        self._set_routine_weekday_inputs_enabled(False)
         self.routine_repeat_hint_label.setWordWrap(True)
+        self.routine_everyday_hint_label.setWordWrap(True)
+        self.routine_weekly_hint_label.setWordWrap(True)
 
         repeat_widget = QWidget()
-        repeat_layout = QHBoxLayout(repeat_widget)
+        repeat_layout = QVBoxLayout(repeat_widget)
         repeat_layout.setContentsMargins(0, 0, 0, 0)
-        repeat_layout.addWidget(self.routine_everyday_input)
+
+        everyday_row = QWidget()
+        everyday_layout = QHBoxLayout(everyday_row)
+        everyday_layout.setContentsMargins(0, 0, 0, 0)
+        everyday_layout.addWidget(self.routine_everyday_input)
+        everyday_layout.addWidget(self.routine_everyday_hint_label)
+        everyday_layout.addStretch(1)
+
+        weekly_row = QWidget()
+        weekly_layout = QHBoxLayout(weekly_row)
+        weekly_layout.setContentsMargins(0, 0, 0, 0)
+        weekly_layout.addWidget(self.routine_weekly_input)
+        weekly_layout.addWidget(self.routine_weekly_hint_label)
+        weekly_layout.addStretch(1)
+
+        weekday_row = QWidget()
+        weekday_layout = QHBoxLayout(weekday_row)
+        weekday_layout.setContentsMargins(16, 0, 0, 0)
+        for weekday_input in self.routine_weekday_inputs:
+            weekday_layout.addWidget(weekday_input)
+        weekday_layout.addStretch(1)
+
+        repeat_layout.addWidget(everyday_row)
+        repeat_layout.addWidget(weekly_row)
+        repeat_layout.addWidget(weekday_row)
         repeat_layout.addWidget(self.routine_repeat_hint_label)
-        repeat_layout.addStretch(1)
 
         form.addRow("mode", self.routine_mode_input)
         form.addRow("タイトル", self.routine_title_input)
@@ -1632,6 +1677,7 @@ class DayView(QWidget):
             old_target_date,
             "10:00:00",
         )
+        self._update_routine_repeat_hint()
 
     def _sync_datetime_input_date(
         self,
@@ -1654,6 +1700,9 @@ class DayView(QWidget):
         self.routine_end_input.clear()
         self.routine_duration_input.clear()
         self.routine_everyday_input.setChecked(True)
+        self.routine_weekly_input.setChecked(False)
+        self._clear_routine_weekday_inputs()
+        self._set_routine_weekday_inputs_enabled(False)
         self.routine_remind_start_input.setChecked(False)
         self.routine_remind_end_input.setChecked(False)
         self.routine_note_input.clear()
@@ -1668,18 +1717,80 @@ class DayView(QWidget):
         self.routine_remind_end_input.setEnabled(is_fixed_time)
         self.routine_duration_input.setEnabled(not is_fixed_time)
 
+    def _on_routine_everyday_toggled(self, checked: bool) -> None:
+        if checked and self.routine_weekly_input.isChecked():
+            self.routine_weekly_input.setChecked(False)
+        self._set_routine_weekday_inputs_enabled(self.routine_weekly_input.isChecked())
+        self._update_routine_repeat_hint()
+
+    def _on_routine_weekly_toggled(self, checked: bool) -> None:
+        if checked and self.routine_everyday_input.isChecked():
+            self.routine_everyday_input.setChecked(False)
+        self._set_routine_weekday_inputs_enabled(checked)
+        if checked and not self._selected_routine_weekdays():
+            self._select_current_target_weekday()
+        self._update_routine_repeat_hint()
+
     def _update_routine_repeat_hint(self) -> None:
         if self.routine_everyday_input.isChecked():
-            self.routine_repeat_hint_label.setText("ON: 毎日繰り返し")
+            self.routine_repeat_hint_label.setText("繰り返し: 毎日")
             return
 
-        self.routine_repeat_hint_label.setText("OFF: 対象曜日のみ繰り返し")
+        if self.routine_weekly_input.isChecked():
+            selected_weekdays = self._selected_routine_weekdays()
+            weekday_labels = ", ".join(
+                _format_weekday_label(weekday) for weekday in selected_weekdays
+            )
+            if not weekday_labels:
+                weekday_labels = "曜日未選択"
+            self.routine_repeat_hint_label.setText(
+                f"繰り返し: 毎週（{weekday_labels}）"
+            )
+            return
+
+        self.routine_repeat_hint_label.setText("繰り返しを選択してください")
+
+    def _validate_routine_repeat_setting(self) -> str | None:
+        everyday_checked = self.routine_everyday_input.isChecked()
+        weekly_checked = self.routine_weekly_input.isChecked()
+        if everyday_checked and weekly_checked:
+            return "毎日繰り返すと毎週繰り返すは同時に選択できません。"
+        if not everyday_checked and not weekly_checked:
+            return "毎日繰り返すか毎週繰り返すのどちらかを選択してください。"
+        if weekly_checked and not self._selected_routine_weekdays():
+            return "毎週繰り返す場合は曜日を1つ以上選択してください。"
+        return None
 
     def _routine_weekdays_from_repeat_setting(self) -> str:
         if self.routine_everyday_input.isChecked():
             return EVERYDAY_WEEKDAYS
 
-        return str(date.fromisoformat(self.target_date).weekday())
+        if self.routine_weekly_input.isChecked():
+            selected_weekdays = self._selected_routine_weekdays()
+            if selected_weekdays:
+                return ",".join(str(weekday) for weekday in selected_weekdays)
+
+        raise ValueError("繰り返し設定が未選択です。")
+
+    def _selected_routine_weekdays(self) -> list[int]:
+        return [
+            weekday
+            for weekday, input_widget in enumerate(self.routine_weekday_inputs)
+            if input_widget.isChecked()
+        ]
+
+    def _clear_routine_weekday_inputs(self) -> None:
+        for weekday_input in self.routine_weekday_inputs:
+            weekday_input.setChecked(False)
+
+    def _set_routine_weekday_inputs_enabled(self, enabled: bool) -> None:
+        for weekday_input in self.routine_weekday_inputs:
+            weekday_input.setEnabled(enabled)
+
+    def _select_current_target_weekday(self) -> None:
+        weekday = date.fromisoformat(self.target_date).weekday()
+        if 0 <= weekday < len(self.routine_weekday_inputs):
+            self.routine_weekday_inputs[weekday].setChecked(True)
 
     def _clear_daily_log_inputs(self) -> None:
         self.log_date_input.setText(self.target_date)
@@ -1697,6 +1808,12 @@ def _parse_event_datetime(value: str) -> datetime | None:
         return datetime.strptime(value, "%Y-%m-%dT%H:%M:%S")
     except ValueError:
         return None
+
+
+def _format_weekday_label(weekday: int) -> str:
+    if 0 <= weekday < len(WEEKDAY_LABELS):
+        return WEEKDAY_LABELS[weekday]
+    return str(weekday)
 
 
 def _parse_routine_time(value: str) -> time | None:
