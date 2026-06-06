@@ -52,6 +52,16 @@ CREATE TABLE IF NOT EXISTS a_tasks (
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- Aタスク候補メモ（正式なAタスク化前の控え）
+CREATE TABLE IF NOT EXISTS a_task_candidates (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  title TEXT NOT NULL,
+  memo TEXT NOT NULL DEFAULT '',
+  category TEXT NOT NULL DEFAULT '',
+  is_converted INTEGER NOT NULL DEFAULT 0 CHECK(is_converted IN (0, 1)),
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 -- 日次ログ（実績と反省）
 CREATE TABLE IF NOT EXISTS daily_logs (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -76,4 +86,5 @@ CREATE INDEX IF NOT EXISTS idx_events_type  ON events(type);
 CREATE INDEX IF NOT EXISTS idx_routine_events_mode ON routine_events(mode);
 CREATE INDEX IF NOT EXISTS idx_tasks_deadline ON a_tasks(deadline_date);
 CREATE INDEX IF NOT EXISTS idx_tasks_status ON a_tasks(status);
+CREATE INDEX IF NOT EXISTS idx_task_candidates_converted ON a_task_candidates(is_converted, created_at);
 CREATE INDEX IF NOT EXISTS idx_logs_date ON daily_logs(log_date);

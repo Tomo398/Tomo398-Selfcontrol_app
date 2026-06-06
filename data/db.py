@@ -33,6 +33,7 @@ def init_db(
         sql = schema_path.read_text(encoding="utf-8")
         conn.executescript(sql)
         _ensure_a_tasks_status_column(conn)
+        _ensure_a_task_candidates_table(conn)
         _ensure_settings_table(conn)
         conn.commit()
     finally:
@@ -227,6 +228,71 @@ def update_a_task_status(
         )
         if cur.rowcount == 0:
             raise ValueError(f"a_task_id not found: {a_task_id}")
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def insert_a_task_candidate(
+    title: str,
+    memo: str = "",
+    category: str = "",
+    db_path: Path = DEFAULT_DB_PATH,
+) -> int:
+    title = title.strip()
+    if not title:
+        raise ValueError("title is required")
+
+    conn = connect(db_path)
+    try:
+        _ensure_a_task_candidates_table(conn)
+        cur = conn.execute(
+            """
+            INSERT INTO a_task_candidates (title, memo, category)
+            VALUES (?, ?, ?)
+            """,
+            (title, memo.strip(), category.strip()),
+        )
+        conn.commit()
+        return int(cur.lastrowid)
+    finally:
+        conn.close()
+
+
+def list_a_task_candidates(db_path: Path = DEFAULT_DB_PATH) -> list[dict]:
+    conn = connect(db_path)
+    try:
+        _ensure_a_task_candidates_table(conn)
+        rows = conn.execute(
+            """
+            SELECT id, title, memo, category, is_converted, created_at
+            FROM a_task_candidates
+            ORDER BY is_converted ASC, created_at DESC, id DESC
+            """
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def mark_a_task_candidate_converted(
+    candidate_id: int,
+    is_converted: bool = True,
+    db_path: Path = DEFAULT_DB_PATH,
+) -> None:
+    conn = connect(db_path)
+    try:
+        _ensure_a_task_candidates_table(conn)
+        cur = conn.execute(
+            """
+            UPDATE a_task_candidates
+            SET is_converted = ?
+            WHERE id = ?
+            """,
+            (1 if is_converted else 0, candidate_id),
+        )
+        if cur.rowcount == 0:
+            raise ValueError(f"a_task_candidate_id not found: {candidate_id}")
         conn.commit()
     finally:
         conn.close()
@@ -519,6 +585,28 @@ def _ensure_settings_table(conn: sqlite3.Connection) -> None:
           key TEXT PRIMARY KEY,
           value TEXT NOT NULL
         )
+        """
+    )
+    conn.commit()
+
+
+def _ensure_a_task_candidates_table(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS a_task_candidates (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          title TEXT NOT NULL,
+          memo TEXT NOT NULL DEFAULT '',
+          category TEXT NOT NULL DEFAULT '',
+          is_converted INTEGER NOT NULL DEFAULT 0 CHECK(is_converted IN (0, 1)),
+          created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_task_candidates_converted
+        ON a_task_candidates(is_converted, created_at)
         """
     )
     conn.commit()

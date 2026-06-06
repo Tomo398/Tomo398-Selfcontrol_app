@@ -38,13 +38,16 @@ from data.db import (
     delete_routine_event,
     get_setting,
     insert_a_task,
+    insert_a_task_candidate,
     insert_event,
     insert_routine_event,
     has_daily_log,
     list_a_tasks,
+    list_a_task_candidates,
     list_events_by_date,
     list_expired_active_a_tasks,
     list_routine_events_for_date,
+    mark_a_task_candidate_converted,
     recompute_remaining_minutes,
     set_setting,
     update_a_task_total_minutes,
@@ -71,6 +74,8 @@ class DayView(QWidget):
         self.displayed_missing_log_refs: list[tuple[str, int]] = []
         self.displayed_expired_task_ids: list[int] = []
         self.displayed_duration_only_routine_ids: list[int] = []
+        self.displayed_candidate_ids: list[int] = []
+        self.copied_candidate_id: int | None = None
 
         self.date_label = QLabel()
         self.target_date_input = QLineEdit(self.target_date)
@@ -78,6 +83,11 @@ class DayView(QWidget):
         self.refresh_button = QPushButton("再計算")
         self.status_label = QLabel()
         self.status_label.setWordWrap(True)
+        self.candidate_title_input = QLineEdit()
+        self.candidate_memo_input = QLineEdit()
+        self.candidate_category_input = QLineEdit()
+        self.add_candidate_button = QPushButton("候補メモ追加")
+        self.copy_candidate_to_task_button = QPushButton("選択候補をA追加フォームへコピー")
         self.task_title_input = QLineEdit()
         self.task_deadline_input = QLineEdit()
         self.task_minutes_input = QLineEdit()
@@ -134,6 +144,9 @@ class DayView(QWidget):
         )
         self.missing_logs_table = self._create_table(["日付", "Aタスク名", "予定分数"])
         self.duration_only_table = self._create_table(["ID", "タイトル", "所要時間(分)", "メモ"])
+        self.candidates_table = self._create_table(
+            ["ID", "タイトル", "カテゴリ", "メモ", "A化済み", "作成日"]
+        )
         self.tasks_table = self._create_table(
             [
                 "ID",
@@ -149,6 +162,7 @@ class DayView(QWidget):
         self.allocations_table = self._create_table(
             ["開始", "終了", "タスク名", "分数"]
         )
+        self.candidates_table.setColumnHidden(0, True)
         self.tasks_table.setColumnHidden(0, True)
         self._set_table_minimum_heights()
         self._load_check_reminder_settings()
@@ -157,6 +171,10 @@ class DayView(QWidget):
         self._build_layout()
         self.change_date_button.clicked.connect(self.refresh)
         self.refresh_button.clicked.connect(self.refresh)
+        self.add_candidate_button.clicked.connect(self.add_a_task_candidate)
+        self.copy_candidate_to_task_button.clicked.connect(
+            self.copy_selected_candidate_to_task_form
+        )
         self.add_task_button.clicked.connect(self.add_a_task)
         self.update_task_total_button.clicked.connect(self.update_selected_task_total)
         self.add_event_button.clicked.connect(self.add_b_event)
@@ -222,6 +240,12 @@ class DayView(QWidget):
     def _build_edit_tab(self) -> QWidget:
         return self._build_scroll_tab(
             [
+                self._build_add_candidate_form(),
+                self._wrap_table(
+                    "Aタスク候補メモ一覧",
+                    self.candidates_table,
+                    self.copy_candidate_to_task_button,
+                ),
                 self._build_add_task_form(),
                 self._build_update_task_total_form(),
                 self._build_add_event_form(),
@@ -284,6 +308,7 @@ class DayView(QWidget):
             busy_blocks = build_busy_blocks(scheduled_events)
             free_blocks = build_free_blocks(self.target_date, busy_blocks)
             active_tasks = list_a_tasks()
+            candidates = list_a_task_candidates()
             expired_tasks = list_expired_active_a_tasks(self.target_date)
             tasks = _tasks_available_on_date(active_tasks, self.target_date)
             tasks_with_targets = attach_daily_targets_to_tasks(tasks, today=self.target_date)
@@ -297,6 +322,7 @@ class DayView(QWidget):
                 duration_only_events=duration_only_routines,
                 tasks_with_targets=tasks_with_targets,
                 allocations=allocations,
+                today=self.target_date,
             )
             missing_logs = self._build_missing_logs_for_previous_day(active_tasks)
         except Exception as exc:
@@ -312,6 +338,7 @@ class DayView(QWidget):
             duration_only_routines,
             int(capacity_summary["floating_c_minutes"]),
         )
+        self._set_candidates(candidates)
         self._set_tasks(tasks_with_targets)
         self._set_allocations(allocations)
         self._set_log_task_options(tasks)
@@ -320,6 +347,7 @@ class DayView(QWidget):
         self.status_label.setText(
             f"B/C予定 {len(scheduled_events)}件 / 時間未指定C 合計 "
             f"{capacity_summary['floating_c_minutes']}分 / Aタスク {len(tasks)}件 / "
+            f"候補 {len(candidates)}件 / "
             f"割当 {len(allocations)}件 / 未入力ログ {len(missing_logs)}件 / "
             f"期限切れA {len(expired_tasks)}件{capacity_status}"
         )
@@ -340,6 +368,49 @@ class DayView(QWidget):
             self._sync_target_date_inputs(old_target_date)
 
         return None
+
+    def add_a_task_candidate(self) -> None:
+        title = self.candidate_title_input.text().strip()
+        memo = self.candidate_memo_input.text().strip()
+        category = self.candidate_category_input.text().strip()
+
+        error = self._validate_candidate_input(title)
+        if error:
+            self.status_label.setText(error)
+            return
+
+        try:
+            insert_a_task_candidate(
+                title=title,
+                memo=memo,
+                category=category,
+            )
+        except Exception as exc:
+            self.status_label.setText(f"Aタスク候補メモの保存に失敗しました: {exc}")
+            return
+
+        self._clear_candidate_inputs()
+        self.refresh()
+        self.status_label.setText("Aタスク候補メモを追加しました。")
+
+    def copy_selected_candidate_to_task_form(self) -> None:
+        candidate_id = self._selected_candidate_id()
+        if candidate_id is None:
+            self.status_label.setText("A追加フォームへコピーする候補を選択してください。")
+            return
+
+        row = self.candidates_table.currentRow()
+        title_item = self.candidates_table.item(row, 1)
+        title = title_item.text().strip() if title_item is not None else ""
+        if not title:
+            self.status_label.setText("候補タイトルを読み取れませんでした。")
+            return
+
+        self.task_title_input.setText(title)
+        self.copied_candidate_id = candidate_id
+        self.status_label.setText(
+            "候補タイトルをAタスク追加フォームへコピーしました。締切日と必要時間を入力してください。"
+        )
 
     def add_a_task(self) -> None:
         title = self.task_title_input.text().strip()
@@ -362,11 +433,20 @@ class DayView(QWidget):
             self.status_label.setText(f"Aタスクの保存に失敗しました: {exc}")
             return
 
+        status_message = "Aタスクを追加しました。"
+        if self.copied_candidate_id is not None:
+            try:
+                mark_a_task_candidate_converted(self.copied_candidate_id)
+                status_message = "Aタスクを追加し、候補メモをA化済みにしました。"
+            except Exception as exc:
+                status_message = f"Aタスクを追加しましたが、候補メモの更新に失敗しました: {exc}"
+
+        self.copied_candidate_id = None
         self.task_title_input.clear()
         self.task_deadline_input.setText(self.target_date)
         self.task_minutes_input.clear()
         self.refresh()
-        self.status_label.setText("Aタスクを追加しました。")
+        self.status_label.setText(status_message)
 
     def update_selected_task_total(self) -> None:
         a_task_id = self._selected_row_id(self.tasks_table)
@@ -684,6 +764,20 @@ class DayView(QWidget):
         layout.addWidget(self.refresh_button)
         return group
 
+    def _build_add_candidate_form(self) -> QGroupBox:
+        group = QGroupBox("Aタスク候補メモ追加")
+        form = QFormLayout(group)
+
+        self.candidate_title_input.setPlaceholderText("例: 論文整理をAタスク化するか検討")
+        self.candidate_memo_input.setPlaceholderText("例: 週末に必要時間を見積もる")
+        self.candidate_category_input.setPlaceholderText("例: 研究")
+
+        form.addRow("タイトル", self.candidate_title_input)
+        form.addRow("メモ", self.candidate_memo_input)
+        form.addRow("想定カテゴリ", self.candidate_category_input)
+        form.addRow(self.add_candidate_button)
+        return group
+
     def _build_add_task_form(self) -> QGroupBox:
         group = QGroupBox("Aタスク追加")
         form = QFormLayout(group)
@@ -788,6 +882,7 @@ class DayView(QWidget):
         self.expired_tasks_table.setMinimumHeight(120)
         self.missing_logs_table.setMinimumHeight(110)
         self.duration_only_table.setMinimumHeight(120)
+        self.candidates_table.setMinimumHeight(150)
         self.tasks_table.setMinimumHeight(190)
         self.allocations_table.setMinimumHeight(170)
 
@@ -878,6 +973,7 @@ class DayView(QWidget):
         self.displayed_missing_log_refs = []
         self.displayed_expired_task_ids = []
         self.displayed_duration_only_routine_ids = []
+        self.displayed_candidate_ids = []
         self.capacity_summary_label.clear()
         self.expired_tasks_summary_label.setText("期限切れAタスクなし")
         self.mark_expired_task_completed_button.setEnabled(False)
@@ -886,11 +982,13 @@ class DayView(QWidget):
         self.record_zero_missing_log_button.setEnabled(False)
         self.duration_only_summary_label.clear()
         self.delete_duration_only_button.setEnabled(False)
+        self.copy_candidate_to_task_button.setEnabled(False)
         for table in (
             self.events_table,
             self.expired_tasks_table,
             self.missing_logs_table,
             self.duration_only_table,
+            self.candidates_table,
             self.tasks_table,
             self.allocations_table,
         ):
@@ -983,6 +1081,8 @@ class DayView(QWidget):
             surplus_text = f"過密警告: 実質作業可能時間が {abs(surplus_minutes)}分不足"
         else:
             surplus_text = f"余力: {surplus_minutes}分"
+        excluded_message = str(summary.get("a_allocation_excluded_message", ""))
+        excluded_text = f" / {excluded_message}" if excluded_message else ""
 
         self.capacity_summary_label.setText(
             f"固定予定後の空き時間合計: {summary['fixed_free_minutes']}分 / "
@@ -990,6 +1090,7 @@ class DayView(QWidget):
             f"実質作業可能時間: {summary['effective_work_minutes']}分 / "
             f"今日のA推奨合計: {summary['total_a_target_minutes']}分 / "
             f"{surplus_text}"
+            f"{excluded_text}"
         )
 
     def _set_duration_only_routines(
@@ -1014,6 +1115,26 @@ class DayView(QWidget):
 
         self._set_rows(self.duration_only_table, rows)
         self.delete_duration_only_button.setEnabled(bool(rows))
+
+    def _set_candidates(self, candidates: list[dict]) -> None:
+        self.displayed_candidate_ids = []
+        rows = []
+
+        for candidate in candidates:
+            rows.append(
+                [
+                    str(candidate["id"]),
+                    str(candidate["title"]),
+                    str(candidate.get("category", "")),
+                    str(candidate.get("memo", "")),
+                    "済" if int(candidate.get("is_converted", 0)) else "未",
+                    str(candidate.get("created_at", "")),
+                ]
+            )
+            self.displayed_candidate_ids.append(int(candidate["id"]))
+
+        self._set_rows(self.candidates_table, rows)
+        self.copy_candidate_to_task_button.setEnabled(bool(rows))
 
     def _set_tasks(self, tasks: list[dict]) -> None:
         self.tasks_table.setRowCount(0)
@@ -1158,6 +1279,12 @@ class DayView(QWidget):
             return None
         return self.displayed_duration_only_routine_ids[row]
 
+    def _selected_candidate_id(self) -> int | None:
+        row = self.candidates_table.currentRow()
+        if row < 0 or row >= len(self.displayed_candidate_ids):
+            return None
+        return self.displayed_candidate_ids[row]
+
     def _selected_expired_task_id(self) -> int | None:
         row = self.expired_tasks_table.currentRow()
         if row < 0 or row >= len(self.displayed_expired_task_ids):
@@ -1261,6 +1388,11 @@ class DayView(QWidget):
         if total_minutes <= 0:
             return "必要時間は1分以上で入力してください。"
 
+        return None
+
+    def _validate_candidate_input(self, title: str) -> str | None:
+        if not title:
+            return "Aタスク候補メモのタイトルを入力してください。"
         return None
 
     def _validate_task_total_update_input(
@@ -1417,6 +1549,11 @@ class DayView(QWidget):
         self.event_remind_start_input.setChecked(False)
         self.event_remind_end_input.setChecked(False)
         self.event_note_input.clear()
+
+    def _clear_candidate_inputs(self) -> None:
+        self.candidate_title_input.clear()
+        self.candidate_memo_input.clear()
+        self.candidate_category_input.clear()
 
     def _sync_target_date_inputs(self, old_target_date: str | None = None) -> None:
         self.log_date_input.setText(self.target_date)
