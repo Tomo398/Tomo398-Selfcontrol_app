@@ -234,17 +234,17 @@ class DayView(QWidget):
                 self._wrap_missing_logs(),
                 self._wrap_expired_tasks(),
                 self._wrap_table(
-                    "今日のB予定・fixed_time C",
-                    self.events_table,
-                    self.delete_event_button,
-                ),
-                self._wrap_duration_only_table(),
-                self._wrap_table(
                     "今日のAタスク",
                     self.tasks_table,
                     self.delete_task_button,
                 ),
                 self._wrap_table("今日のA割当結果", self.allocations_table),
+                self._wrap_table(
+                    "今日のB予定・fixed_time C",
+                    self.events_table,
+                    self.delete_event_button,
+                ),
+                self._wrap_duration_only_table(),
             ]
         )
 
@@ -918,12 +918,15 @@ class DayView(QWidget):
 
     def _set_table_minimum_heights(self) -> None:
         self.events_table.setMinimumHeight(150)
-        self.expired_tasks_table.setMinimumHeight(120)
-        self.missing_logs_table.setMinimumHeight(110)
+        self.expired_tasks_table.setMinimumHeight(90)
+        self.expired_tasks_table.setMaximumHeight(110)
+        self.missing_logs_table.setMinimumHeight(90)
+        self.missing_logs_table.setMaximumHeight(110)
         self.duration_only_table.setMinimumHeight(120)
         self.candidates_table.setMinimumHeight(150)
         self.tasks_table.setMinimumHeight(190)
-        self.allocations_table.setMinimumHeight(170)
+        self.allocations_table.setMinimumHeight(120)
+        self.allocations_table.setMaximumHeight(150)
 
     def _wrap_table(
         self,
