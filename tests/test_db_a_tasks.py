@@ -12,9 +12,96 @@ from data.db import (
     update_a_task_scale_label,
     update_a_task_status,
     upsert_daily_log,
+    delete_daily_log_by_id,
+    list_daily_logs_by_date,
+    recompute_remaining_minutes,
 )
 
+def test_daily_logs_allow_multiple_entries_for_same_task_and_date(tmp_path) -> None:
+    db_path = tmp_path / "app.db"
+    init_db(db_path=db_path)
+    task_id = insert_a_task(
+        title="Logged task",
+        start_date="2026-04-20",
+        deadline_date="2026-04-30",
+        total_minutes=120,
+        db_path=db_path,
+    )
 
+    upsert_daily_log(
+        log_date="2026-04-20",
+        a_task_id=task_id,
+        actual_minutes=30,
+        reflection="Morning",
+        db_path=db_path,
+    )
+    upsert_daily_log(
+        log_date="2026-04-20",
+        a_task_id=task_id,
+        actual_minutes=45,
+        reflection="Night",
+        db_path=db_path,
+    )
+
+    daily_logs = list_daily_logs_by_date("2026-04-20", db_path=db_path)
+
+    assert len(daily_logs) == 2
+    assert [log["actual_minutes"] for log in daily_logs] == [30, 45]
+    assert [log["reflection"] for log in daily_logs] == ["Morning", "Night"]
+
+    remaining = recompute_remaining_minutes(task_id, db_path=db_path)
+
+    assert remaining == 45
+    [task] = list_a_tasks(db_path=db_path)
+    assert task["remaining_minutes"] == 45
+
+
+def test_delete_daily_log_by_id_removes_only_one_log(tmp_path) -> None:
+    db_path = tmp_path / "app.db"
+    init_db(db_path=db_path)
+    task_id = insert_a_task(
+        title="Logged task",
+        start_date="2026-04-20",
+        deadline_date="2026-04-30",
+        total_minutes=120,
+        db_path=db_path,
+    )
+
+    upsert_daily_log(
+        log_date="2026-04-20",
+        a_task_id=task_id,
+        actual_minutes=30,
+        reflection="Morning",
+        db_path=db_path,
+    )
+    upsert_daily_log(
+        log_date="2026-04-20",
+        a_task_id=task_id,
+        actual_minutes=45,
+        reflection="Night",
+        db_path=db_path,
+    )
+
+    daily_logs = list_daily_logs_by_date("2026-04-20", db_path=db_path)
+    deleted_task_id = delete_daily_log_by_id(int(daily_logs[0]["id"]), db_path=db_path)
+
+    assert deleted_task_id == task_id
+
+    remaining_logs = list_daily_logs_by_date("2026-04-20", db_path=db_path)
+    assert len(remaining_logs) == 1
+    assert remaining_logs[0]["actual_minutes"] == 45
+
+    remaining = recompute_remaining_minutes(task_id, db_path=db_path)
+    assert remaining == 75
+
+
+def test_delete_daily_log_by_id_rejects_missing_log(tmp_path) -> None:
+    db_path = tmp_path / "app.db"
+    init_db(db_path=db_path)
+
+    with pytest.raises(ValueError):
+        delete_daily_log_by_id(999, db_path=db_path)
+        
 def test_update_a_task_total_minutes_recomputes_remaining_when_total_increases(tmp_path) -> None:
     db_path = tmp_path / "app.db"
     init_db(db_path=db_path)

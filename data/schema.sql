@@ -73,8 +73,7 @@ CREATE TABLE IF NOT EXISTS daily_logs (
   actual_minutes INTEGER NOT NULL DEFAULT 0 CHECK(actual_minutes >= 0),
   reflection TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
-  FOREIGN KEY (a_task_id) REFERENCES a_tasks(id) ON DELETE CASCADE,
-  UNIQUE (log_date, a_task_id)
+  FOREIGN KEY (a_task_id) REFERENCES a_tasks(id) ON DELETE CASCADE
 );
 
 -- アプリ内設定

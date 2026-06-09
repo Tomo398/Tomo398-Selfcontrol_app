@@ -35,6 +35,8 @@ from core.scheduler import (
 from data.db import (
     delete_a_task,
     delete_event,
+    delete_a_task_candidate,
+    delete_daily_log_by_id,
     delete_routine_event,
     get_setting,
     insert_a_task,
@@ -44,6 +46,7 @@ from data.db import (
     has_daily_log,
     list_a_tasks,
     list_a_task_candidates,
+    list_daily_logs_by_date,
     list_events_by_date,
     list_expired_active_a_tasks,
     list_routine_events_for_date,
@@ -82,6 +85,7 @@ class DayView(QWidget):
         self.displayed_expired_task_ids: list[int] = []
         self.displayed_duration_only_routine_ids: list[int] = []
         self.displayed_candidate_ids: list[int] = []
+        self.displayed_daily_log_refs: list[tuple[int, int]] = []
         self.copied_candidate_id: int | None = None
 
         self.date_label = QLabel()
@@ -135,6 +139,10 @@ class DayView(QWidget):
         self.delete_task_button = QPushButton("選択Aタスク削除")
         self.delete_event_button = QPushButton("選択B/C予定削除")
         self.delete_duration_only_button = QPushButton("選択時間未指定C削除")
+        self.delete_candidate_button = QPushButton("選択候補メモ削除")
+        self.delete_daily_log_button = QPushButton("選択入力済みログ削除")
+        self.daily_logs_summary_label = QLabel()
+        self.daily_logs_summary_label.setWordWrap(True)
         self.record_zero_missing_log_button = QPushButton("0分として記録")
         self.mark_expired_task_completed_button = QPushButton("完了にする")
         self.mark_expired_task_incomplete_button = QPushButton("未完了にする")
@@ -172,6 +180,9 @@ class DayView(QWidget):
         self.candidates_table = self._create_table(
             ["ID", "タイトル", "カテゴリ", "メモ", "A化済み", "作成日"]
         )
+        self.daily_logs_table = self._create_table(
+            ["ID", "日付", "Aタスク名", "実績時間(分)", "反省", "作成日"]
+        )
         self.tasks_table = self._create_table(
             [
                 "ID",
@@ -191,6 +202,7 @@ class DayView(QWidget):
             ["開始", "終了", "タスク名", "分数"]
         )
         self.candidates_table.setColumnHidden(0, True)
+        self.daily_logs_table.setColumnHidden(0, True)
         self.tasks_table.setColumnHidden(0, True)
         self._set_table_minimum_heights()
         self._load_check_reminder_settings()
@@ -216,6 +228,8 @@ class DayView(QWidget):
                 lambda _checked=False: self._update_routine_repeat_hint()
             )
         self.save_log_button.clicked.connect(self.save_daily_log)
+        self.delete_candidate_button.clicked.connect(self.delete_selected_candidate)
+        self.delete_daily_log_button.clicked.connect(self.delete_selected_daily_log)
         self.delete_task_button.clicked.connect(self.delete_selected_task)
         self.delete_event_button.clicked.connect(self.delete_selected_event)
         self.delete_duration_only_button.clicked.connect(
@@ -250,37 +264,11 @@ class DayView(QWidget):
         root.addWidget(tabs)
         root.addWidget(self._wrap_message())
 
-    def _build_today_tab(self) -> QWidget:
-        return self._build_scroll_tab(
-            [
-                self._build_date_controls(),
-                self._wrap_capacity_summary(),
-                self._wrap_missing_logs(),
-                self._wrap_expired_tasks(),
-                self._wrap_table(
-                    "今日のAタスク",
-                    self.tasks_table,
-                    self.delete_task_button,
-                ),
-                self._wrap_table("今日のA割当結果", self.allocations_table),
-                self._wrap_table(
-                    "今日のB予定・fixed_time C",
-                    self.events_table,
-                    self.delete_event_button,
-                ),
-                self._wrap_duration_only_table(),
-            ]
-        )
-
     def _build_edit_tab(self) -> QWidget:
         return self._build_scroll_tab(
             [
                 self._build_add_candidate_form(),
-                self._wrap_table(
-                    "Aタスク候補メモ一覧",
-                    self.candidates_table,
-                    self.copy_candidate_to_task_button,
-                ),
+                self._wrap_candidates_table(),
                 self._build_add_task_form(),
                 self._build_update_task_total_form(),
                 self._build_add_event_form(),
@@ -352,6 +340,7 @@ class DayView(QWidget):
             free_blocks = build_free_blocks(self.target_date, busy_blocks)
             active_tasks = list_a_tasks()
             candidates = list_a_task_candidates()
+            daily_logs = list_daily_logs_by_date(self.target_date)
             expired_tasks = list_expired_active_a_tasks(self.target_date)
             tasks = _tasks_available_on_date(active_tasks, self.target_date)
             tasks_with_targets = attach_daily_targets_to_tasks(tasks, today=self.target_date)
@@ -375,6 +364,7 @@ class DayView(QWidget):
 
         self._set_events(scheduled_events)
         self._set_missing_logs(missing_logs)
+        self._set_daily_logs(daily_logs)
         self._set_expired_tasks(expired_tasks)
         self._set_capacity_summary(capacity_summary)
         self._set_duration_only_routines(
@@ -392,7 +382,8 @@ class DayView(QWidget):
             f"B/C予定 {len(scheduled_events)}件 / 時間未指定C 合計 "
             f"{capacity_summary['floating_c_minutes']}分 / Aタスク {len(tasks)}件 / "
             f"候補 {len(candidates)}件 / "
-            f"割当 {len(allocations)}件 / 未入力ログ {len(missing_logs)}件 / "
+            f"割当 {len(allocations)}件 / 入力済みログ {len(daily_logs)}件 / "
+            f"未入力ログ {len(missing_logs)}件 / "
             f"期限切れA {len(expired_tasks)}件{capacity_status}"
         )
 
@@ -752,6 +743,48 @@ class DayView(QWidget):
         self.refresh()
         self.status_label.setText("Aタスクを削除しました。")
 
+    def delete_selected_candidate(self) -> None:
+        candidate_id = self._selected_candidate_id()
+        if candidate_id is None:
+            self.status_label.setText("削除するAタスク候補メモを選択してください。")
+            return
+
+        if not self._confirm_delete("選択したAタスク候補メモ"):
+            return
+
+        try:
+            delete_a_task_candidate(candidate_id)
+        except Exception as exc:
+            self.status_label.setText(f"Aタスク候補メモの削除に失敗しました: {exc}")
+            return
+
+        if self.copied_candidate_id == candidate_id:
+            self.copied_candidate_id = None
+ 
+        self.refresh()
+        self.status_label.setText("Aタスク候補メモを削除しました。")
+
+    def delete_selected_daily_log(self) -> None:
+        daily_log_ref = self._selected_daily_log_ref()
+        if daily_log_ref is None:
+            self.status_label.setText("削除する入力済みAログを選択してください。")
+            return
+
+        log_id, a_task_id = daily_log_ref
+
+        if not self._confirm_delete("選択した入力済みAログ"):
+            return
+
+        try:
+            a_task_id = delete_daily_log_by_id(log_id)
+            recompute_remaining_minutes(a_task_id)
+        except Exception as exc:
+            self.status_label.setText(f"入力済みAログの削除に失敗しました: {exc}")
+            return
+
+        self.refresh()
+        self.status_label.setText("入力済みAログを削除しました。")
+
     def delete_selected_event(self) -> None:
         event_ref = self._selected_event_ref()
         if event_ref is None:
@@ -1106,6 +1139,42 @@ class DayView(QWidget):
         actions.addWidget(self.record_zero_missing_log_button)
         layout.addLayout(actions)
         return group
+    
+    def _wrap_daily_logs(self) -> QGroupBox:
+        group = QGroupBox("今日の入力済みAログ")
+        layout = QVBoxLayout(group)
+        layout.addWidget(self.daily_logs_summary_label)
+        layout.addWidget(self.daily_logs_table)
+
+        actions = QHBoxLayout()
+        actions.addStretch(1)
+        actions.addWidget(self.delete_daily_log_button)
+        layout.addLayout(actions)
+
+        return group
+    
+    def _build_today_tab(self) -> QWidget:
+        return self._build_scroll_tab(
+            [
+                self._build_date_controls(),
+                self._wrap_capacity_summary(),
+                self._wrap_missing_logs(),
+                self._wrap_daily_logs(),
+                self._wrap_expired_tasks(),
+                self._wrap_table(
+                    "今日のAタスク",
+                self.tasks_table,
+                self.delete_task_button,
+                ),
+                self._wrap_table("今日のA割当結果", self.allocations_table),
+                self._wrap_table(
+                    "今日のB予定・fixed_time C",
+                self.events_table,
+                self.delete_event_button,
+                ),
+            self._wrap_duration_only_table(),
+            ]
+            )
 
     def _wrap_duration_only_table(self) -> QGroupBox:
         group = QGroupBox("時間未指定C")
@@ -1115,6 +1184,18 @@ class DayView(QWidget):
         actions = QHBoxLayout()
         actions.addStretch(1)
         actions.addWidget(self.delete_duration_only_button)
+        layout.addLayout(actions)
+        return group
+    
+    def _wrap_candidates_table(self) -> QGroupBox:
+        group = QGroupBox("Aタスク候補メモ一覧")
+        layout = QVBoxLayout(group)
+        layout.addWidget(self.candidates_table)
+
+        actions = QHBoxLayout()
+        actions.addStretch(1)
+        actions.addWidget(self.copy_candidate_to_task_button)
+        actions.addWidget(self.delete_candidate_button)
         layout.addLayout(actions)
         return group
 
@@ -1144,6 +1225,9 @@ class DayView(QWidget):
         return group
 
     def _clear_tables(self) -> None:
+        self.displayed_daily_log_refs = []
+        self.daily_logs_summary_label.setText("今日の入力済みログなし")
+        self.delete_daily_log_button.setEnabled(False)
         self.displayed_event_refs = []
         self.displayed_missing_log_refs = []
         self.displayed_expired_task_ids = []
@@ -1163,6 +1247,7 @@ class DayView(QWidget):
             self.schedule_overview_table,
             self.expired_tasks_table,
             self.missing_logs_table,
+            self.daily_logs_table,
             self.duration_only_table,
             self.candidates_table,
             self.tasks_table,
@@ -1219,8 +1304,8 @@ class DayView(QWidget):
 
                 weekdays = str(routine.get("weekdays", ""))
 
-                   # 予定確認タブでは、睡眠などの「毎日fixed_time C」は表示しない。
-                    # 表示対象は「単発B」と「毎週fixed_time C」のみにする。
+                # 予定確認タブでは、睡眠などの「毎日fixed_time C」は表示しない。
+                # 表示対象は「単発B」と「毎週fixed_time C」のみにする。
                 if _routine_repeat_kind(weekdays) == "毎日":
                     continue
 
@@ -1336,6 +1421,35 @@ class DayView(QWidget):
 
         self.missing_logs_summary_label.setText("未入力ログなし")
         self.record_zero_missing_log_button.setEnabled(False)
+    
+    def _set_daily_logs(self, daily_logs: list[dict]) -> None:
+        self.displayed_daily_log_refs = []
+        rows = []
+
+        for daily_log in daily_logs:
+            rows.append(
+                [
+                    str(daily_log["id"]),
+                    str(daily_log["log_date"]),
+                    str(daily_log["task_title"]),
+                    str(daily_log["actual_minutes"]),
+                    str(daily_log.get("reflection", "")),
+                    str(daily_log.get("created_at", "")),
+                    ])
+            self.displayed_daily_log_refs.append(
+                (int(daily_log["id"]), int(daily_log["a_task_id"]))
+                )
+        self._set_rows(self.daily_logs_table, rows)
+
+        if rows:
+            total_minutes = sum(int(log["actual_minutes"]) for log in daily_logs)
+            self.daily_logs_summary_label.setText(
+                f"今日の入力済みAログ: {len(rows)}件 / 合計 {total_minutes}分"
+                )
+            self.delete_daily_log_button.setEnabled(True)
+            return
+        self.daily_logs_summary_label.setText("今日の入力済みログなし")
+        self.delete_daily_log_button.setEnabled(False)
 
     def _set_capacity_summary(self, summary: dict) -> None:
         surplus_minutes = int(summary["surplus_minutes"])
@@ -1537,6 +1651,12 @@ class DayView(QWidget):
         if row < 0 or row >= len(self.displayed_missing_log_refs):
             return None
         return self.displayed_missing_log_refs[row]
+    
+    def _selected_daily_log_ref(self) -> tuple[int, int] | None:
+        row = self.daily_logs_table.currentRow()
+        if row < 0 or row >= len(self.displayed_daily_log_refs):
+            return None
+        return self.displayed_daily_log_refs[row]
 
     def _selected_duration_only_routine_id(self) -> int | None:
         row = self.duration_only_table.currentRow()

@@ -7,9 +7,34 @@ from data.db import (
     insert_a_task_candidate,
     list_a_task_candidates,
     mark_a_task_candidate_converted,
+    delete_a_task_candidate,
 )
 
+def test_delete_a_task_candidate_removes_candidate(tmp_path) -> None:
+    db_path = tmp_path / "app.db"
+    init_db(db_path=db_path)
 
+    candidate_id = insert_a_task_candidate(
+        title="Delete me",
+        memo="temporary",
+        category="test",
+        db_path=db_path,
+    )
+
+    assert len(list_a_task_candidates(db_path=db_path)) == 1
+
+    delete_a_task_candidate(candidate_id, db_path=db_path)
+
+    assert list_a_task_candidates(db_path=db_path) == []
+
+
+def test_delete_a_task_candidate_rejects_missing_candidate(tmp_path) -> None:
+    db_path = tmp_path / "app.db"
+    init_db(db_path=db_path)
+
+    with pytest.raises(ValueError):
+        delete_a_task_candidate(999, db_path=db_path)
+        
 def test_a_task_candidate_can_be_saved_listed_and_marked_converted(tmp_path) -> None:
     db_path = tmp_path / "app.db"
     init_db(db_path=db_path)

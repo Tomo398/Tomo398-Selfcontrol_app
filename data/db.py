@@ -38,6 +38,7 @@ def init_db(
         _ensure_a_tasks_status_column(conn)
         _ensure_a_tasks_start_date_column(conn)
         _ensure_a_tasks_scale_label_column(conn)
+        _ensure_daily_logs_allows_duplicates(conn)
         _ensure_a_task_candidates_table(conn)
         _ensure_settings_table(conn)
         conn.commit()
@@ -153,9 +154,6 @@ def upsert_daily_log(
             """
             INSERT INTO daily_logs (log_date, a_task_id, actual_minutes, reflection)
             VALUES (?, ?, ?, ?)
-            ON CONFLICT(log_date, a_task_id) DO UPDATE SET
-              actual_minutes = excluded.actual_minutes,
-              reflection = excluded.reflection
             """,
             (log_date, a_task_id, actual_minutes, reflection),
         )
@@ -346,6 +344,25 @@ def mark_a_task_candidate_converted(
     finally:
         conn.close()
 
+def delete_a_task_candidate(
+    candidate_id: int,
+    db_path: Path = DEFAULT_DB_PATH,
+) -> None:
+    conn = connect(db_path)
+    try:
+        _ensure_a_task_candidates_table(conn)
+        cur = conn.execute(
+            """
+            DELETE FROM a_task_candidates
+            WHERE id = ?
+            """,
+            (candidate_id,),
+        )
+        if cur.rowcount == 0:
+            raise ValueError(f"a_task_candidate_id not found: {candidate_id}")
+        conn.commit()
+    finally:
+        conn.close()
 
 def get_setting(
     key: str,
@@ -402,6 +419,36 @@ def get_daily_logs(
             ORDER BY log_date ASC
             """,
             (a_task_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+def list_daily_logs_by_date(
+    log_date: str,
+    db_path: Path = DEFAULT_DB_PATH,
+) -> list[dict]:
+    date.fromisoformat(log_date)
+
+    conn = connect(db_path)
+    try:
+        rows = conn.execute(
+            """
+            SELECT
+              dl.id,
+              dl.log_date,
+              dl.a_task_id,
+              at.title AS task_title,
+              dl.actual_minutes,
+              dl.reflection,
+              dl.created_at
+            FROM daily_logs dl
+            JOIN a_tasks at
+              ON at.id = dl.a_task_id
+            WHERE dl.log_date = ?
+            ORDER BY dl.created_at ASC, dl.id ASC
+            """,
+            (log_date,),
         ).fetchall()
         return [dict(r) for r in rows]
     finally:
@@ -700,6 +747,64 @@ def _ensure_a_tasks_scale_label_column(conn: sqlite3.Connection) -> None:
     )
     conn.commit()
 
+def _ensure_daily_logs_allows_duplicates(conn: sqlite3.Connection) -> None:
+    table = conn.execute(
+        """
+        SELECT name
+        FROM sqlite_master
+        WHERE type = 'table' AND name = 'daily_logs'
+        """
+    ).fetchone()
+    if table is None:
+        return
+
+    indexes = conn.execute("PRAGMA index_list(daily_logs)").fetchall()
+    has_unique_log_task_index = False
+
+    for index in indexes:
+        index_name = str(index["name"])
+        is_unique = int(index["unique"]) == 1
+        if not is_unique:
+            continue
+
+        columns = [
+            str(row["name"])
+            for row in conn.execute(f"PRAGMA index_info({index_name})").fetchall()
+        ]
+        if columns == ["log_date", "a_task_id"]:
+            has_unique_log_task_index = True
+            break
+
+    if not has_unique_log_task_index:
+        return
+
+    conn.execute("ALTER TABLE daily_logs RENAME TO daily_logs_old")
+    conn.execute(
+        """
+        CREATE TABLE daily_logs (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          log_date TEXT NOT NULL,
+          a_task_id INTEGER NOT NULL,
+          actual_minutes INTEGER NOT NULL CHECK(actual_minutes >= 0),
+          reflection TEXT NOT NULL DEFAULT '',
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          FOREIGN KEY(a_task_id) REFERENCES a_tasks(id) ON DELETE CASCADE
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO daily_logs (
+          id, log_date, a_task_id, actual_minutes, reflection, created_at
+        )
+        SELECT
+          id, log_date, a_task_id, actual_minutes, reflection, created_at
+        FROM daily_logs_old
+        ORDER BY id ASC
+        """
+    )
+    conn.execute("DROP TABLE daily_logs_old")
+    conn.commit()
 
 def _ensure_settings_table(conn: sqlite3.Connection) -> None:
     conn.execute(
@@ -848,20 +953,33 @@ def delete_event(
         conn.close()
 
 
-def delete_daily_log(
-    log_date: str,
-    a_task_id: int,
+def delete_daily_log_by_id(
+    log_id: int,
     db_path: Path = DEFAULT_DB_PATH,
-) -> None:
+) -> int:
     conn = connect(db_path)
     try:
+        row = conn.execute(
+            """
+            SELECT a_task_id
+            FROM daily_logs
+            WHERE id = ?
+            """,
+            (log_id,),
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"daily_log_id not found: {log_id}")
+
+        a_task_id = int(row["a_task_id"])
+
         conn.execute(
             """
             DELETE FROM daily_logs
-            WHERE log_date = ? AND a_task_id = ?
+            WHERE id = ?
             """,
-            (log_date, a_task_id),
+            (log_id,),
         )
         conn.commit()
+        return a_task_id
     finally:
         conn.close()
