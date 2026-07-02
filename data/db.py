@@ -40,6 +40,7 @@ def init_db(
         _ensure_a_tasks_scale_label_column(conn)
         _ensure_daily_logs_allows_duplicates(conn)
         _ensure_a_task_candidates_table(conn)
+        _ensure_schedule_exceptions_table(conn)
         _ensure_settings_table(conn)
         conn.commit()
     finally:
@@ -110,6 +111,28 @@ def list_a_tasks(db_path: Path = DEFAULT_DB_PATH) -> list[dict]:
         conn.close()
 
 
+def list_completed_a_tasks(db_path: Path = DEFAULT_DB_PATH) -> list[dict]:
+    conn = connect(db_path)
+    try:
+        _ensure_a_tasks_status_column(conn)
+        _ensure_a_tasks_start_date_column(conn)
+        _ensure_a_tasks_scale_label_column(conn)
+        rows = conn.execute(
+            """
+            SELECT
+              id, title, start_date, deadline_date, total_minutes,
+              remaining_minutes, task_scale_label, status, created_at
+            FROM a_tasks
+            WHERE status = 'completed'
+               OR remaining_minutes = 0
+            ORDER BY deadline_date DESC, id DESC
+            """
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
 def list_expired_active_a_tasks(
     target_date: str,
     db_path: Path = DEFAULT_DB_PATH,
@@ -173,7 +196,7 @@ def recompute_remaining_minutes(
     conn = connect(db_path)
     try:
         row = conn.execute(
-            "SELECT total_minutes FROM a_tasks WHERE id = ?",
+            "SELECT total_minutes, status FROM a_tasks WHERE id = ?",
             (a_task_id,),
         ).fetchone()
         if row is None:
@@ -188,9 +211,10 @@ def recompute_remaining_minutes(
         done = int(sum_row["s"])
         remaining = max(total - done, 0)
 
+        status = _status_after_remaining_update(str(row["status"]), remaining)
         conn.execute(
-            "UPDATE a_tasks SET remaining_minutes = ? WHERE id = ?",
-            (remaining, a_task_id),
+            "UPDATE a_tasks SET remaining_minutes = ?, status = ? WHERE id = ?",
+            (remaining, status, a_task_id),
         )
         conn.commit()
         return remaining
@@ -210,7 +234,7 @@ def update_a_task_total_minutes(
     try:
         _ensure_a_tasks_status_column(conn)
         row = conn.execute(
-            "SELECT id FROM a_tasks WHERE id = ?",
+            "SELECT id, status FROM a_tasks WHERE id = ?",
             (a_task_id,),
         ).fetchone()
         if row is None:
@@ -223,16 +247,49 @@ def update_a_task_total_minutes(
         done = int(sum_row["s"])
         remaining = max(int(new_total_minutes) - done, 0)
 
+        status = _status_after_remaining_update(str(row["status"]), remaining)
         conn.execute(
             """
             UPDATE a_tasks
-            SET total_minutes = ?, remaining_minutes = ?
+            SET total_minutes = ?, remaining_minutes = ?, status = ?
             WHERE id = ?
             """,
-            (int(new_total_minutes), remaining, a_task_id),
+            (int(new_total_minutes), remaining, status, a_task_id),
         )
         conn.commit()
         return remaining
+    finally:
+        conn.close()
+
+
+def update_a_task_deadline_date(
+    a_task_id: int,
+    new_deadline_date: str,
+    db_path: Path = DEFAULT_DB_PATH,
+) -> None:
+    parsed_deadline = date.fromisoformat(new_deadline_date)
+
+    conn = connect(db_path)
+    try:
+        _ensure_a_tasks_start_date_column(conn)
+        row = conn.execute(
+            "SELECT id, start_date FROM a_tasks WHERE id = ?",
+            (a_task_id,),
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"a_task_id not found: {a_task_id}")
+
+        start_date = row["start_date"]
+        if start_date:
+            parsed_start = date.fromisoformat(str(start_date))
+            if parsed_start > parsed_deadline:
+                raise ValueError("deadline_date must be on or after start_date")
+
+        conn.execute(
+            "UPDATE a_tasks SET deadline_date = ? WHERE id = ?",
+            (parsed_deadline.isoformat(), a_task_id),
+        )
+        conn.commit()
     finally:
         conn.close()
 
@@ -400,6 +457,91 @@ def set_setting(
             """,
             (key, value),
         )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def insert_schedule_exception(
+    start_date: str,
+    end_date: str,
+    title: str = "",
+    note: str = "",
+    db_path: Path = DEFAULT_DB_PATH,
+) -> int:
+    normalized_start, normalized_end = _normalize_exception_date_range(
+        start_date=start_date,
+        end_date=end_date,
+    )
+
+    conn = connect(db_path)
+    try:
+        _ensure_schedule_exceptions_table(conn)
+        cur = conn.execute(
+            """
+            INSERT INTO schedule_exceptions (title, start_date, end_date, note)
+            VALUES (?, ?, ?, ?)
+            """,
+            (title.strip(), normalized_start, normalized_end, note.strip()),
+        )
+        conn.commit()
+        return int(cur.lastrowid)
+    finally:
+        conn.close()
+
+
+def list_schedule_exceptions(db_path: Path = DEFAULT_DB_PATH) -> list[dict]:
+    conn = connect(db_path)
+    try:
+        _ensure_schedule_exceptions_table(conn)
+        rows = conn.execute(
+            """
+            SELECT id, title, start_date, end_date, note, created_at
+            FROM schedule_exceptions
+            ORDER BY start_date ASC, end_date ASC, id ASC
+            """
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def list_schedule_exceptions_for_date(
+    target_date: str,
+    db_path: Path = DEFAULT_DB_PATH,
+) -> list[dict]:
+    target = date.fromisoformat(target_date).isoformat()
+
+    conn = connect(db_path)
+    try:
+        _ensure_schedule_exceptions_table(conn)
+        rows = conn.execute(
+            """
+            SELECT id, title, start_date, end_date, note, created_at
+            FROM schedule_exceptions
+            WHERE start_date <= ? AND end_date >= ?
+            ORDER BY start_date ASC, end_date ASC, id ASC
+            """,
+            (target, target),
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def delete_schedule_exception(
+    exception_id: int,
+    db_path: Path = DEFAULT_DB_PATH,
+) -> None:
+    conn = connect(db_path)
+    try:
+        _ensure_schedule_exceptions_table(conn)
+        cur = conn.execute(
+            "DELETE FROM schedule_exceptions WHERE id = ?",
+            (exception_id,),
+        )
+        if cur.rowcount == 0:
+            raise ValueError(f"schedule_exception_id not found: {exception_id}")
         conn.commit()
     finally:
         conn.close()
@@ -601,6 +743,25 @@ def list_routine_events_for_date(
         )
 
     return routine_events
+
+
+def list_routine_event_rules(
+    db_path: Path = DEFAULT_DB_PATH,
+) -> list[dict]:
+    conn = connect(db_path)
+    try:
+        rows = conn.execute(
+            """
+            SELECT
+              id, title, mode, start_time, end_time, duration_minutes,
+              weekdays, remind_start, remind_end, note
+            FROM routine_events
+            ORDER BY id ASC
+            """
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
 
 
 def delete_routine_event(
@@ -840,6 +1001,29 @@ def _ensure_a_task_candidates_table(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+def _ensure_schedule_exceptions_table(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS schedule_exceptions (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          title TEXT NOT NULL DEFAULT '',
+          start_date TEXT NOT NULL,
+          end_date TEXT NOT NULL,
+          note TEXT NOT NULL DEFAULT '',
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          CHECK(start_date <= end_date)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_schedule_exceptions_range
+        ON schedule_exceptions(start_date, end_date)
+        """
+    )
+    conn.commit()
+
+
 def _normalize_a_task_date_range(
     start_date: str | None,
     deadline_date: str,
@@ -851,11 +1035,30 @@ def _normalize_a_task_date_range(
     return start.isoformat(), deadline.isoformat()
 
 
+def _normalize_exception_date_range(
+    start_date: str,
+    end_date: str,
+) -> tuple[str, str]:
+    start = date.fromisoformat(start_date)
+    end = date.fromisoformat(end_date)
+    if start > end:
+        raise ValueError("start_date must be on or before end_date")
+    return start.isoformat(), end.isoformat()
+
+
 def _normalize_task_scale_label(task_scale_label: str) -> str:
     label = task_scale_label.strip()
     if label not in A_TASK_SCALE_LABELS:
         raise ValueError("task_scale_label must be weekly, monthly, yearly, or other")
     return label
+
+
+def _status_after_remaining_update(current_status: str, remaining_minutes: int) -> str:
+    if remaining_minutes == 0:
+        return "completed"
+    if current_status == "incomplete":
+        return "incomplete"
+    return "active"
 
 
 def _parse_hhmm(value: str | None) -> time | None:

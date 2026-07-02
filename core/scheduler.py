@@ -14,6 +14,17 @@ def parse_date(d: str) -> date:
     return date.fromisoformat(d)
 
 
+def normalize_excluded_dates(
+    excluded_dates: set[str] | set[date] | None,
+) -> set[date]:
+    if not excluded_dates:
+        return set()
+    return {
+        parse_date(item) if isinstance(item, str) else item
+        for item in excluded_dates
+    }
+
+
 def is_a_allocation_workday(target_date: date | str) -> bool:
     d = parse_date(target_date) if isinstance(target_date, str) else target_date
     return d.weekday() != SUNDAY_WEEKDAY
@@ -27,7 +38,11 @@ def days_inclusive(today: date, deadline: date) -> int:
     return (deadline - today).days + 1
 
 
-def a_allocation_workdays_inclusive(today: date, deadline: date) -> int:
+def a_allocation_workdays_inclusive(
+    today: date,
+    deadline: date,
+    excluded_dates: set[str] | set[date] | None = None,
+) -> int:
     """
     Aタスクの自動割当対象日（月〜土）を、今日から締切日まで含めて数える。
     """
@@ -35,10 +50,12 @@ def a_allocation_workdays_inclusive(today: date, deadline: date) -> int:
     if total_days <= 0:
         return 0
 
+    excluded = normalize_excluded_dates(excluded_dates)
     return sum(
         1
         for offset in range(total_days)
         if is_a_allocation_workday(today + timedelta(days=offset))
+        and today + timedelta(days=offset) not in excluded
     )
 
 
@@ -47,6 +64,7 @@ def compute_daily_target_minutes(
     deadline_date: str,
     today: str | None = None,
     start_date: str | None = None,
+    excluded_dates: set[str] | set[date] | None = None,
 ) -> int:
     """
     MVP版: daily_target = ceil(remaining / remaining_workdays_inclusive)
@@ -58,13 +76,20 @@ def compute_daily_target_minutes(
     d_deadline = parse_date(deadline_date)
     d_today = parse_date(today) if today else date.today()
     d_start = parse_date(start_date) if start_date else None
+    excluded = normalize_excluded_dates(excluded_dates)
 
     if not is_a_allocation_workday(d_today):
+        return 0
+    if d_today in excluded:
         return 0
     if d_start is not None and d_today < d_start:
         return 0
 
-    remaining_workdays = a_allocation_workdays_inclusive(d_today, d_deadline)
+    remaining_workdays = a_allocation_workdays_inclusive(
+        d_today,
+        d_deadline,
+        excluded_dates=excluded,
+    )
     if remaining_workdays <= 0:
         # 期限切れ：今日に全部寄せる（MVPの割り切り）
         return remaining_minutes
@@ -100,6 +125,7 @@ def compute_daily_target_rounded_minutes(
     today: str | None = None,
     start_date: str | None = None,
     granularity: int = DEFAULT_GRANULARITY_MINUTES,
+    excluded_dates: set[str] | set[date] | None = None,
 ) -> int:
     """
     日割りした推奨時間を指定粒度に切り上げる。
@@ -109,6 +135,7 @@ def compute_daily_target_rounded_minutes(
         deadline_date=deadline_date,
         today=today,
         start_date=start_date,
+        excluded_dates=excluded_dates,
     )
     return round_up_to_granularity(raw, granularity)
 
@@ -117,6 +144,7 @@ def attach_daily_targets_to_tasks(
     tasks: list[dict],
     today: str | None = None,
     granularity: int = DEFAULT_GRANULARITY_MINUTES,
+    excluded_dates: set[str] | set[date] | None = None,
 ) -> list[dict]:
     """
     list_a_tasks() の結果に daily_target_minutes を付ける。
@@ -132,6 +160,7 @@ def attach_daily_targets_to_tasks(
             today=today,
             start_date=task.get("start_date"),
             granularity=granularity,
+            excluded_dates=excluded_dates,
         )
         task_with_target["schedule_note"] = task_schedule_note(task, today)
         result.append(task_with_target)
@@ -444,6 +473,7 @@ def allocate_tasks_to_free_blocks(
     free_blocks: list[TimeBlock],
     today: str,
     granularity: int = DEFAULT_GRANULARITY_MINUTES,
+    excluded_dates: set[str] | set[date] | None = None,
 ) -> list[dict]:
     """
     複数Aタスクを締切が近い順にfree_blocksへ割り当てる。
@@ -470,6 +500,7 @@ def allocate_tasks_to_free_blocks(
             today=today,
             start_date=task.get("start_date"),
             granularity=granularity,
+            excluded_dates=excluded_dates,
         )
 
         if target_minutes <= 0:

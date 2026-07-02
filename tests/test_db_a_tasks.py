@@ -7,7 +7,9 @@ from data.db import (
     init_db,
     insert_a_task,
     list_a_tasks,
+    list_completed_a_tasks,
     list_expired_active_a_tasks,
+    update_a_task_deadline_date,
     update_a_task_total_minutes,
     update_a_task_scale_label,
     update_a_task_status,
@@ -107,6 +109,7 @@ def test_update_a_task_total_minutes_recomputes_remaining_when_total_increases(t
     init_db(db_path=db_path)
     task_id = insert_a_task(
         title="Long task",
+        start_date="2026-04-20",
         deadline_date="2026-06-30",
         total_minutes=1200,
         db_path=db_path,
@@ -215,6 +218,7 @@ def test_update_a_task_total_minutes_clamps_remaining_to_zero(tmp_path) -> None:
     init_db(db_path=db_path)
     task_id = insert_a_task(
         title="Long task",
+        start_date="2026-04-20",
         deadline_date="2026-06-30",
         total_minutes=1200,
         db_path=db_path,
@@ -229,9 +233,73 @@ def test_update_a_task_total_minutes_clamps_remaining_to_zero(tmp_path) -> None:
     remaining = update_a_task_total_minutes(task_id, 100, db_path=db_path)
 
     assert remaining == 0
-    [task] = list_a_tasks(db_path=db_path)
+    assert list_a_tasks(db_path=db_path) == []
+    [task] = list_completed_a_tasks(db_path=db_path)
     assert task["total_minutes"] == 100
     assert task["remaining_minutes"] == 0
+    assert task["status"] == "completed"
+
+
+def test_update_a_task_deadline_date_updates_existing_task(tmp_path) -> None:
+    db_path = tmp_path / "app.db"
+    init_db(db_path=db_path)
+    task_id = insert_a_task(
+        title="Deadline task",
+        start_date="2026-05-01",
+        deadline_date="2026-05-10",
+        total_minutes=300,
+        db_path=db_path,
+    )
+
+    update_a_task_deadline_date(task_id, "2026-05-20", db_path=db_path)
+
+    [task] = list_a_tasks(db_path=db_path)
+    assert task["deadline_date"] == "2026-05-20"
+
+
+def test_update_a_task_deadline_date_rejects_date_before_start(tmp_path) -> None:
+    db_path = tmp_path / "app.db"
+    init_db(db_path=db_path)
+    task_id = insert_a_task(
+        title="Deadline task",
+        start_date="2026-05-01",
+        deadline_date="2026-05-10",
+        total_minutes=300,
+        db_path=db_path,
+    )
+
+    with pytest.raises(ValueError):
+        update_a_task_deadline_date(task_id, "2026-04-30", db_path=db_path)
+
+    [task] = list_a_tasks(db_path=db_path)
+    assert task["deadline_date"] == "2026-05-10"
+
+
+def test_recompute_remaining_minutes_marks_task_completed_when_logs_reach_total(tmp_path) -> None:
+    db_path = tmp_path / "app.db"
+    init_db(db_path=db_path)
+    task_id = insert_a_task(
+        title="Finished task",
+        start_date="2026-04-20",
+        deadline_date="2026-04-30",
+        total_minutes=60,
+        db_path=db_path,
+    )
+    upsert_daily_log(
+        log_date="2026-04-20",
+        a_task_id=task_id,
+        actual_minutes=90,
+        db_path=db_path,
+    )
+
+    remaining = recompute_remaining_minutes(task_id, db_path=db_path)
+
+    assert remaining == 0
+    assert list_a_tasks(db_path=db_path) == []
+    [completed_task] = list_completed_a_tasks(db_path=db_path)
+    assert completed_task["id"] == task_id
+    assert completed_task["remaining_minutes"] == 0
+    assert completed_task["status"] == "completed"
 
 
 def test_update_a_task_total_minutes_validates_input(tmp_path) -> None:
@@ -250,6 +318,7 @@ def test_has_daily_log_treats_zero_minute_log_as_existing(tmp_path) -> None:
     init_db(db_path=db_path)
     task_id = insert_a_task(
         title="Long task",
+        start_date="2026-04-20",
         deadline_date="2026-06-30",
         total_minutes=1200,
         db_path=db_path,

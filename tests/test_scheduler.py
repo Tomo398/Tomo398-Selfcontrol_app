@@ -71,6 +71,27 @@ def test_compute_daily_target_minutes_counts_workdays_excluding_sunday() -> None
     )
 
 
+def test_compute_daily_target_minutes_counts_workdays_excluding_exception_dates() -> None:
+    assert (
+        compute_daily_target_minutes(
+            remaining_minutes=600,
+            deadline_date="2026-04-25",
+            today="2026-04-20",
+            excluded_dates={"2026-04-21", "2026-04-22"},
+        )
+        == 150
+    )
+    assert (
+        compute_daily_target_minutes(
+            remaining_minutes=600,
+            deadline_date="2026-04-25",
+            today="2026-04-21",
+            excluded_dates={"2026-04-21", "2026-04-22"},
+        )
+        == 0
+    )
+
+
 def test_compute_daily_target_minutes_returns_zero_before_start_date() -> None:
     assert (
         compute_daily_target_minutes(
