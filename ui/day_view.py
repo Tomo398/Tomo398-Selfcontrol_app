@@ -59,7 +59,7 @@ from data.db import (
     mark_a_task_candidate_converted,
     recompute_remaining_minutes,
     set_setting,
-    update_a_task_deadline_date,
+    update_a_task_dates,
     update_a_task_total_minutes,
     update_a_task_status,
     upsert_daily_log,
@@ -72,6 +72,7 @@ MORNING_CHECK_TIME_KEY = "morning_check_time"
 NIGHT_LOG_TIME_KEY = "night_log_time"
 DEFAULT_MORNING_CHECK_TIME = "08:00"
 DEFAULT_NIGHT_LOG_TIME = "23:00"
+EXPIRED_TASK_RESULTS_AFTER_DAYS = 7
 TASK_SCALE_LABELS = {
     "weekly": "週単位",
     "monthly": "月単位",
@@ -119,8 +120,9 @@ class DayView(QWidget):
         self.add_task_button = QPushButton("Aタスク追加")
         self.task_total_update_input = QLineEdit()
         self.update_task_total_button = QPushButton("A想定時間更新")
+        self.task_start_update_input = QLineEdit()
         self.task_deadline_update_input = QLineEdit()
-        self.update_task_deadline_button = QPushButton("A期限更新")
+        self.update_task_deadline_button = QPushButton("A日付更新")
         self.event_title_input = QLineEdit()
         self.event_start_input = QLineEdit()
         self.event_end_input = QLineEdit()
@@ -159,7 +161,6 @@ class DayView(QWidget):
         self.delete_event_button = QPushButton("選択B/C予定削除")
         self.delete_duration_only_button = QPushButton("選択Cルール削除")
         self.delete_exception_button = QPushButton("選択例外日削除")
-        self.delete_completed_task_button = QPushButton("完了済みAタスク削除")
         self.delete_candidate_button = QPushButton("選択候補メモ削除")
         self.delete_daily_log_button = QPushButton("選択入力済みログ削除")
         self.daily_logs_summary_label = QLabel()
@@ -178,6 +179,8 @@ class DayView(QWidget):
         self.capacity_summary_label.setWordWrap(True)
         self.expired_tasks_summary_label = QLabel()
         self.expired_tasks_summary_label.setWordWrap(True)
+        self.result_expired_tasks_summary_label = QLabel("期限超過Aタスクなし")
+        self.result_expired_tasks_summary_label.setWordWrap(True)
         self.missing_logs_summary_label = QLabel()
         self.missing_logs_summary_label.setWordWrap(True)
         self.duration_only_summary_label = QLabel()
@@ -211,6 +214,9 @@ class DayView(QWidget):
             ["ID", "タイトル", "開始日", "終了日", "メモ"]
         )
         self.expired_tasks_table = self._create_table(
+            ["タスク名", "締切", "総時間", "残り時間", "進捗"]
+        )
+        self.result_expired_tasks_table = self._create_table(
             ["タスク名", "締切", "総時間", "残り時間", "進捗"]
         )
         self.missing_logs_table = self._create_table(["日付", "Aタスク名", "予定分数"])
@@ -277,7 +283,6 @@ class DayView(QWidget):
         self.delete_candidate_button.clicked.connect(self.delete_selected_candidate)
         self.delete_daily_log_button.clicked.connect(self.delete_selected_daily_log)
         self.delete_task_button.clicked.connect(self.delete_selected_task)
-        self.delete_completed_task_button.clicked.connect(self.delete_selected_completed_task)
         self.delete_exception_button.clicked.connect(self.delete_selected_schedule_exception)
         self.delete_schedule_overview_item_button.clicked.connect(
             self.delete_selected_schedule_overview_item
@@ -309,6 +314,7 @@ class DayView(QWidget):
 
         tabs = QTabWidget()
         tabs.addTab(self._build_today_tab(), "今日の確認")
+        tabs.addTab(self._build_results_tab(), "実績")
         tabs.addTab(self._build_schedule_tab(), "確認・削除")
         tabs.addTab(self._build_edit_tab(), "入力")
         tabs.addTab(self._build_settings_tab(), "設定")
@@ -334,6 +340,13 @@ class DayView(QWidget):
                 self._build_schedule_controls(),
                 self._wrap_schedule_overview_table(),
                 self._wrap_routine_rules_table(),
+            ]
+        )
+
+    def _build_results_tab(self) -> QWidget:
+        return self._build_scroll_tab(
+            [
+                self._wrap_result_expired_tasks_table(),
                 self._wrap_completed_tasks_table(),
             ]
         )
@@ -408,7 +421,10 @@ class DayView(QWidget):
             routine_rules = list_routine_event_rules()
             candidates = list_a_task_candidates()
             daily_logs = list_daily_logs_by_date(self.target_date)
-            expired_tasks = list_expired_active_a_tasks(self.target_date)
+            expired_tasks, result_expired_tasks = _split_expired_tasks_for_results(
+                list_expired_active_a_tasks(self.target_date),
+                self.target_date,
+            )
             tasks = [] if exceptions_today else _unfinished_tasks(
                 _tasks_available_on_date(unfinished_active_tasks, self.target_date)
             )
@@ -446,6 +462,7 @@ class DayView(QWidget):
         self._set_missing_logs(missing_logs)
         self._set_daily_logs(daily_logs)
         self._set_expired_tasks(expired_tasks)
+        self._set_result_expired_tasks(result_expired_tasks)
         self._set_capacity_summary(capacity_summary)
         self._set_duration_only_routines(
             duration_only_routines,
@@ -468,7 +485,8 @@ class DayView(QWidget):
             f"候補 {len(candidates)}件 / "
             f"割当 {len(allocations)}件 / 入力済みログ {len(daily_logs)}件 / "
             f"未入力ログ {len(missing_logs)}件 / "
-            f"期限切れA {len(expired_tasks)}件{capacity_status}"
+            f"期限超過A {len(expired_tasks)}件 / "
+            f"実績期限超過A {len(result_expired_tasks)}件{capacity_status}"
         )
 
     def _apply_target_date_from_input(self) -> str | None:
@@ -655,10 +673,12 @@ class DayView(QWidget):
 
     def update_selected_task_deadline(self) -> None:
         a_task_id = self._selected_row_id(self.tasks_table)
+        new_start_date = self.task_start_update_input.text().strip()
         new_deadline_date = self.task_deadline_update_input.text().strip()
 
-        error = self._validate_task_deadline_update_input(
+        error = self._validate_task_date_update_input(
             a_task_id,
+            new_start_date,
             new_deadline_date,
         )
         if error:
@@ -666,17 +686,24 @@ class DayView(QWidget):
             return
 
         try:
-            update_a_task_deadline_date(
+            update_a_task_dates(
                 a_task_id=int(a_task_id),
-                new_deadline_date=new_deadline_date,
+                new_start_date=new_start_date or None,
+                new_deadline_date=new_deadline_date or None,
             )
         except Exception as exc:
-            self.status_label.setText(f"A期限の更新に失敗しました: {exc}")
+            self.status_label.setText(f"A日付の更新に失敗しました: {exc}")
             return
 
+        self.task_start_update_input.clear()
         self.task_deadline_update_input.clear()
         self.refresh()
-        self.status_label.setText(f"A期限を更新しました: {new_deadline_date}")
+        updated_dates = []
+        if new_start_date:
+            updated_dates.append(f"開始日 {new_start_date}")
+        if new_deadline_date:
+            updated_dates.append(f"締切日 {new_deadline_date}")
+        self.status_label.setText("A日付を更新しました: " + " / ".join(updated_dates))
 
     def add_b_event(self) -> None:
         title = self.event_title_input.text().strip()
@@ -848,17 +875,17 @@ class DayView(QWidget):
     def _update_selected_expired_task_status(self, status: str, label: str) -> None:
         a_task_id = self._selected_expired_task_id()
         if a_task_id is None:
-            self.status_label.setText("期限切れAタスクを選択してください。")
+            self.status_label.setText("期限超過Aタスクを選択してください。")
             return
 
         try:
             update_a_task_status(a_task_id, status)
         except Exception as exc:
-            self.status_label.setText(f"期限切れAタスクの更新に失敗しました: {exc}")
+            self.status_label.setText(f"期限超過Aタスクの更新に失敗しました: {exc}")
             return
 
         self.refresh()
-        self.status_label.setText(f"期限切れAタスクを{label}にしました。")
+        self.status_label.setText(f"期限超過Aタスクを{label}にしました。")
 
     def delete_selected_task(self) -> None:
         a_task_id = self._selected_delete_task_id()
@@ -877,24 +904,6 @@ class DayView(QWidget):
 
         self.refresh()
         self.status_label.setText("Aタスクを削除しました。")
-
-    def delete_selected_completed_task(self) -> None:
-        a_task_id = self._selected_completed_task_id()
-        if a_task_id is None:
-            self.status_label.setText("削除する完了済みAタスクを選択してください。")
-            return
-
-        if not self._confirm_delete("選択した完了済みAタスク"):
-            return
-
-        try:
-            delete_a_task(a_task_id)
-        except Exception as exc:
-            self.status_label.setText(f"完了済みAタスクの削除に失敗しました: {exc}")
-            return
-
-        self.refresh()
-        self.status_label.setText("完了済みAタスクを削除しました。")
 
     def delete_selected_schedule_exception(self) -> None:
         exception_id = self._selected_exception_id()
@@ -1132,11 +1141,13 @@ class DayView(QWidget):
         layout = QVBoxLayout(group)
         layout.addWidget(self.completed_tasks_summary_label)
         layout.addWidget(self.completed_tasks_table)
+        return group
 
-        actions = QHBoxLayout()
-        actions.addStretch(1)
-        actions.addWidget(self.delete_completed_task_button)
-        layout.addLayout(actions)
+    def _wrap_result_expired_tasks_table(self) -> QGroupBox:
+        group = QGroupBox("期限超過Aタスク一覧")
+        layout = QVBoxLayout(group)
+        layout.addWidget(self.result_expired_tasks_summary_label)
+        layout.addWidget(self.result_expired_tasks_table)
         return group
 
     def _build_add_candidate_form(self) -> QGroupBox:
@@ -1179,14 +1190,16 @@ class DayView(QWidget):
         return group
 
     def _build_update_task_total_form(self) -> QGroupBox:
-        group = QGroupBox("A想定時間・期限更新")
+        group = QGroupBox("A想定時間・日付更新")
         form = QFormLayout(group)
 
         self.task_total_update_input.setPlaceholderText("例: 1800")
+        self.task_start_update_input.setPlaceholderText("YYYY-MM-DD")
         self.task_deadline_update_input.setPlaceholderText("YYYY-MM-DD")
 
         form.addRow("新しい想定総時間(分)", self.task_total_update_input)
         form.addRow(self.update_task_total_button)
+        form.addRow("新しい開始日", self.task_start_update_input)
         form.addRow("新しい締切日", self.task_deadline_update_input)
         form.addRow(self.update_task_deadline_button)
         return group
@@ -1319,6 +1332,7 @@ class DayView(QWidget):
         self.exceptions_table.setMinimumHeight(120)
         self.expired_tasks_table.setMinimumHeight(90)
         self.expired_tasks_table.setMaximumHeight(110)
+        self.result_expired_tasks_table.setMinimumHeight(150)
         self.missing_logs_table.setMinimumHeight(90)
         self.missing_logs_table.setMaximumHeight(110)
         self.duration_only_table.setMinimumHeight(120)
@@ -1351,7 +1365,7 @@ class DayView(QWidget):
         return group
 
     def _wrap_expired_tasks(self) -> QGroupBox:
-        group = QGroupBox("期限切れAタスク")
+        group = QGroupBox("期限超過Aタスク")
         layout = QVBoxLayout(group)
         layout.addWidget(self.expired_tasks_summary_label)
         layout.addWidget(self.expired_tasks_table)
@@ -1369,6 +1383,10 @@ class DayView(QWidget):
         layout = QVBoxLayout(group)
         layout.addWidget(self.daily_logs_summary_label)
         layout.addWidget(self.daily_logs_table)
+        actions = QHBoxLayout()
+        actions.addStretch(1)
+        actions.addWidget(self.delete_daily_log_button)
+        layout.addLayout(actions)
 
         return group
     
@@ -1487,8 +1505,8 @@ class DayView(QWidget):
         self.exception_summary_label.setText("例外日なし")
         self.delete_exception_button.setEnabled(False)
         self.completed_tasks_summary_label.setText("完了済みAタスクなし")
-        self.delete_completed_task_button.setEnabled(False)
-        self.expired_tasks_summary_label.setText("期限切れAタスクなし")
+        self.expired_tasks_summary_label.setText("期限超過Aタスクなし")
+        self.result_expired_tasks_summary_label.setText("期限超過Aタスクなし")
         self.mark_expired_task_completed_button.setEnabled(False)
         self.mark_expired_task_incomplete_button.setEnabled(False)
         self.missing_logs_summary_label.setText("未入力ログなし")
@@ -1506,6 +1524,7 @@ class DayView(QWidget):
             self.routine_rules_table,
             self.exceptions_table,
             self.expired_tasks_table,
+            self.result_expired_tasks_table,
             self.missing_logs_table,
             self.daily_logs_table,
             self.duration_only_table,
@@ -1661,7 +1680,6 @@ class DayView(QWidget):
         self.completed_tasks_summary_label.setText(
             f"完了済みAタスク: {len(rows)}件" if rows else "完了済みAタスクなし"
         )
-        self.delete_completed_task_button.setEnabled(bool(rows))
 
     def _set_delete_tasks(self, tasks: list[dict]) -> None:
         self.displayed_delete_task_ids = []
@@ -1757,15 +1775,42 @@ class DayView(QWidget):
         self._set_rows(self.expired_tasks_table, rows)
         if rows:
             self.expired_tasks_summary_label.setText(
-                f"要確認: 締切超過activeタスク {len(rows)}件"
+                f"要確認: 期限超過activeタスク {len(rows)}件"
             )
             self.mark_expired_task_completed_button.setEnabled(True)
             self.mark_expired_task_incomplete_button.setEnabled(True)
             return
 
-        self.expired_tasks_summary_label.setText("期限切れAタスクなし")
+        self.expired_tasks_summary_label.setText("期限超過Aタスクなし")
         self.mark_expired_task_completed_button.setEnabled(False)
         self.mark_expired_task_incomplete_button.setEnabled(False)
+
+    def _set_result_expired_tasks(self, tasks: list[dict]) -> None:
+        rows = []
+
+        for task in tasks:
+            (
+                completed_minutes,
+                total_minutes,
+                display_percent,
+                _bar_percent,
+            ) = _task_progress_values(task)
+            rows.append(
+                [
+                    str(task["title"]),
+                    str(task["deadline_date"]),
+                    str(total_minutes),
+                    str(task["remaining_minutes"]),
+                    f"{completed_minutes} / {total_minutes}分（{display_percent:.1f}%）",
+                ]
+            )
+
+        self._set_rows(self.result_expired_tasks_table, rows)
+        self.result_expired_tasks_summary_label.setText(
+            f"期限超過Aタスク: {len(rows)}件"
+            if rows
+            else "期限超過Aタスクなし"
+        )
 
     def _set_missing_logs(self, missing_logs: list[dict]) -> None:
         self.displayed_missing_log_refs = []
@@ -2063,12 +2108,6 @@ class DayView(QWidget):
             return None
         return self.displayed_exception_ids[row]
 
-    def _selected_completed_task_id(self) -> int | None:
-        row = self.completed_tasks_table.currentRow()
-        if row < 0 or row >= len(self.displayed_completed_task_ids):
-            return None
-        return self.displayed_completed_task_ids[row]
-
     def _selected_candidate_id(self) -> int | None:
         row = self.candidates_table.currentRow()
         if row < 0 or row >= len(self.displayed_candidate_ids):
@@ -2224,20 +2263,36 @@ class DayView(QWidget):
 
         return None
 
-    def _validate_task_deadline_update_input(
+    def _validate_task_date_update_input(
         self,
         a_task_id: int | None,
+        new_start_date: str,
         new_deadline_date: str,
     ) -> str | None:
         if a_task_id is None:
             return "更新するAタスクを選択してください。"
-        if not new_deadline_date:
-            return "新しい締切日を入力してください。"
+        if not new_start_date and not new_deadline_date:
+            return "新しい開始日または締切日を入力してください。"
 
-        try:
-            date.fromisoformat(new_deadline_date)
-        except ValueError:
-            return "新しい締切日はYYYY-MM-DD形式で入力してください。"
+        parsed_start = None
+        parsed_deadline = None
+        if new_start_date:
+            try:
+                parsed_start = date.fromisoformat(new_start_date)
+            except ValueError:
+                return "新しい開始日はYYYY-MM-DD形式で入力してください。"
+        if new_deadline_date:
+            try:
+                parsed_deadline = date.fromisoformat(new_deadline_date)
+            except ValueError:
+                return "新しい締切日はYYYY-MM-DD形式で入力してください。"
+
+        if (
+            parsed_start is not None
+            and parsed_deadline is not None
+            and parsed_start > parsed_deadline
+        ):
+            return "開始日は締切日以前にしてください。"
 
         return None
 
@@ -2682,6 +2737,25 @@ def _unfinished_tasks(tasks: list[dict]) -> list[dict]:
         if str(task.get("status", "active")) == "active"
         and int(task.get("remaining_minutes", 0)) > 0
     ]
+
+
+def _split_expired_tasks_for_results(
+    tasks: list[dict],
+    target_date: str,
+) -> tuple[list[dict], list[dict]]:
+    target = date.fromisoformat(target_date)
+    recent_expired_tasks = []
+    result_expired_tasks = []
+
+    for task in tasks:
+        deadline = date.fromisoformat(str(task["deadline_date"]))
+        days_after_deadline = (target - deadline).days
+        if days_after_deadline >= EXPIRED_TASK_RESULTS_AFTER_DAYS:
+            result_expired_tasks.append(task)
+        else:
+            recent_expired_tasks.append(task)
+
+    return recent_expired_tasks, result_expired_tasks
 
 
 def _event_source(event: dict) -> str:

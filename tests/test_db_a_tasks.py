@@ -9,6 +9,7 @@ from data.db import (
     list_a_tasks,
     list_completed_a_tasks,
     list_expired_active_a_tasks,
+    update_a_task_dates,
     update_a_task_deadline_date,
     update_a_task_total_minutes,
     update_a_task_scale_label,
@@ -275,6 +276,66 @@ def test_update_a_task_deadline_date_rejects_date_before_start(tmp_path) -> None
     assert task["deadline_date"] == "2026-05-10"
 
 
+def test_update_a_task_dates_updates_start_date_only(tmp_path) -> None:
+    db_path = tmp_path / "app.db"
+    init_db(db_path=db_path)
+    task_id = insert_a_task(
+        title="Start task",
+        start_date="2026-05-01",
+        deadline_date="2026-05-10",
+        total_minutes=300,
+        db_path=db_path,
+    )
+
+    update_a_task_dates(task_id, new_start_date="2026-05-03", db_path=db_path)
+
+    [task] = list_a_tasks(db_path=db_path)
+    assert task["start_date"] == "2026-05-03"
+    assert task["deadline_date"] == "2026-05-10"
+
+
+def test_update_a_task_dates_rejects_start_after_deadline(tmp_path) -> None:
+    db_path = tmp_path / "app.db"
+    init_db(db_path=db_path)
+    task_id = insert_a_task(
+        title="Start task",
+        start_date="2026-05-01",
+        deadline_date="2026-05-10",
+        total_minutes=300,
+        db_path=db_path,
+    )
+
+    with pytest.raises(ValueError):
+        update_a_task_dates(task_id, new_start_date="2026-05-11", db_path=db_path)
+
+    [task] = list_a_tasks(db_path=db_path)
+    assert task["start_date"] == "2026-05-01"
+    assert task["deadline_date"] == "2026-05-10"
+
+
+def test_update_a_task_dates_updates_start_and_deadline(tmp_path) -> None:
+    db_path = tmp_path / "app.db"
+    init_db(db_path=db_path)
+    task_id = insert_a_task(
+        title="Date range task",
+        start_date="2026-05-01",
+        deadline_date="2026-05-10",
+        total_minutes=300,
+        db_path=db_path,
+    )
+
+    update_a_task_dates(
+        task_id,
+        new_start_date="2026-05-02",
+        new_deadline_date="2026-05-20",
+        db_path=db_path,
+    )
+
+    [task] = list_a_tasks(db_path=db_path)
+    assert task["start_date"] == "2026-05-02"
+    assert task["deadline_date"] == "2026-05-20"
+
+
 def test_recompute_remaining_minutes_marks_task_completed_when_logs_reach_total(tmp_path) -> None:
     db_path = tmp_path / "app.db"
     init_db(db_path=db_path)
@@ -392,7 +453,27 @@ def test_list_expired_active_a_tasks_returns_only_active_expired_tasks(tmp_path)
         total_minutes=120,
         db_path=db_path,
     )
+    satisfied_expired_id = insert_a_task(
+        title="Satisfied expired",
+        start_date="2026-04-18",
+        deadline_date="2026-04-18",
+        total_minutes=120,
+        db_path=db_path,
+    )
     update_a_task_status(closed_expired_id, "completed", db_path=db_path)
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute(
+            """
+            UPDATE a_tasks
+            SET remaining_minutes = 0, status = 'active'
+            WHERE id = ?
+            """,
+            (satisfied_expired_id,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
     expired_tasks = list_expired_active_a_tasks("2026-04-20", db_path=db_path)
 

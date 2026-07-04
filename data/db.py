@@ -152,6 +152,7 @@ def list_expired_active_a_tasks(
             FROM a_tasks
             WHERE status = 'active'
               AND deadline_date < ?
+              AND remaining_minutes > 0
             ORDER BY deadline_date ASC, id ASC
             """,
             (target_date,),
@@ -267,27 +268,50 @@ def update_a_task_deadline_date(
     new_deadline_date: str,
     db_path: Path = DEFAULT_DB_PATH,
 ) -> None:
-    parsed_deadline = date.fromisoformat(new_deadline_date)
+    update_a_task_dates(
+        a_task_id=a_task_id,
+        new_deadline_date=new_deadline_date,
+        db_path=db_path,
+    )
+
+
+def update_a_task_dates(
+    a_task_id: int,
+    new_start_date: str | None = None,
+    new_deadline_date: str | None = None,
+    db_path: Path = DEFAULT_DB_PATH,
+) -> None:
+    if new_start_date is None and new_deadline_date is None:
+        raise ValueError("new_start_date or new_deadline_date is required")
 
     conn = connect(db_path)
     try:
         _ensure_a_tasks_start_date_column(conn)
         row = conn.execute(
-            "SELECT id, start_date FROM a_tasks WHERE id = ?",
+            "SELECT id, start_date, deadline_date FROM a_tasks WHERE id = ?",
             (a_task_id,),
         ).fetchone()
         if row is None:
             raise ValueError(f"a_task_id not found: {a_task_id}")
 
-        start_date = row["start_date"]
-        if start_date:
-            parsed_start = date.fromisoformat(str(start_date))
-            if parsed_start > parsed_deadline:
-                raise ValueError("deadline_date must be on or after start_date")
+        start_date = new_start_date if new_start_date is not None else str(row["start_date"])
+        deadline_date = (
+            new_deadline_date
+            if new_deadline_date is not None
+            else str(row["deadline_date"])
+        )
+        parsed_start = date.fromisoformat(start_date)
+        parsed_deadline = date.fromisoformat(deadline_date)
+        if parsed_start > parsed_deadline:
+            raise ValueError("start_date must be on or before deadline_date")
 
         conn.execute(
-            "UPDATE a_tasks SET deadline_date = ? WHERE id = ?",
-            (parsed_deadline.isoformat(), a_task_id),
+            """
+            UPDATE a_tasks
+            SET start_date = ?, deadline_date = ?
+            WHERE id = ?
+            """,
+            (parsed_start.isoformat(), parsed_deadline.isoformat(), a_task_id),
         )
         conn.commit()
     finally:
